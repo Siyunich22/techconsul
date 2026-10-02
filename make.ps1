@@ -1,7 +1,9 @@
-# ТехОценка — аналог Makefile для Windows PowerShell: .\make.ps1 up | test | ...
+﻿# ТехОценка — аналог Makefile для Windows PowerShell: .\make.ps1 up | test | ...
 param([Parameter(Position = 0)][string]$Target = "help")
 
-$ErrorActionPreference = "Stop"
+# Не "Stop": docker/npm пишут прогресс в stderr, PowerShell 5.1 счёл бы это ошибкой.
+# Успех нативных команд определяется по $LASTEXITCODE в Invoke-Step.
+$ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 
 function Invoke-Step([string]$cmd) {
