@@ -3,7 +3,14 @@ name: techocenka
 x-backend-env: &backend-env
   APP_ENV: ${APP_ENV:-dev}
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-techocenka}:${POSTGRES_PASSWORD:-techocenka}@postgres:5432/${POSTGRES_DB:-techocenka}
+  TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-techocenka}:${POSTGRES_PASSWORD:-techocenka}@postgres:5432/${POSTGRES_DB:-techocenka}_test
   REDIS_URL: redis://redis:6379/0
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+  SMTP_HOST: ${SMTP_HOST:-mailpit}
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
   S3_ENDPOINT_URL: http://minio:9000
   S3_ACCESS_KEY: ${MINIO_ROOT_USER:-techocenka}
   S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-techocenka-secret}
@@ -72,6 +79,11 @@ services:
       mc version enable local/$${S3_BUCKET}
       "
     restart: "no"
+
+  # Перехват исходящей почты в dev: веб-интерфейс http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["${MAILPIT_SMTP_PORT:-1025}:1025", "${MAILPIT_UI_PORT:-8025}:8025"]
 
   api:
     build: ./backend

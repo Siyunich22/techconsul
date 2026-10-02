@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -10,17 +10,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { apiFetch } from "@/lib/api";
+import { api } from "@/lib/api";
+import { qk } from "@/lib/hooks";
+import type { Me } from "@/lib/types";
 
 export default function LoginPage() {
   const t = useTranslations("auth.login");
   const router = useRouter();
+  const queryClient = useQueryClient();
 
-  // Эндпоинт /auth/login появится в фазе 1; до этого форма показывает ошибку входа.
   const login = useMutation({
-    mutationFn: (creds: { email: string; password: string }) =>
-      apiFetch("/auth/login", { method: "POST", body: JSON.stringify(creds) }),
-    onSuccess: () => router.push("/portfolio"),
+    mutationFn: (creds: { email: string; password: string }) => api.post<Me>("/auth/login", creds),
+    onSuccess: (me) => {
+      queryClient.setQueryData(qk.me, me);
+      router.push("/portfolio");
+    },
   });
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {

@@ -1,6 +1,14 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core import health
+from app.main import create_app
+
+
+@pytest.fixture
+def client() -> TestClient:
+    """/health не обращается к get_db — тестовая БД не нужна."""
+    return TestClient(create_app(register_default_template=False))
 
 
 @pytest.fixture

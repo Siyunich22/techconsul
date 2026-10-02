@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// Фаза 1: при наличии сессии — редирект на /portfolio.
+// Без сессии AppShell сам отправит на /login.
 export default function Home() {
-  redirect("/login");
+  redirect("/portfolio");
 }

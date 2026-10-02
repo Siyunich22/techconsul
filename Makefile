@@ -1,6 +1,7 @@
 # ТехОценка — команды разработки. На Windows без make: .\make.ps1 <цель>
 COMPOSE ?= docker compose
-API_RUN = $(COMPOSE) run --rm --no-deps api
+# backend-тестам нужен Postgres (тестовая БД <db>_test создаётся автоматически)
+API_RUN = $(COMPOSE) run --rm api
 WEB_RUN = $(COMPOSE) run --rm --no-deps web
 
 .PHONY: help env up down logs ps migrate seed test test-backend test-frontend test-integration e2e lint fmt health
@@ -27,9 +28,9 @@ migrate:
 	$(COMPOSE) exec api alembic upgrade head
 
 seed:
-	@echo "make seed: демо-организация и sample_project появятся в фазах 1-2 (см. docs/PROGRESS.md)"
+	$(COMPOSE) exec api python -m app.seed
 
-# CI: backend (ruff + pytest) + frontend (lint + typecheck). Не требует поднятых сервисов.
+# CI: backend (ruff + pytest на тестовой БД) + frontend (lint + typecheck).
 test: env test-backend test-frontend
 
 test-backend:

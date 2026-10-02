@@ -17,9 +17,7 @@ from app.core.db import get_engine
 def check_database() -> None:
     with get_engine().connect() as conn:
         conn.execute(text("SELECT 1"))
-        has_vector = conn.execute(
-            text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-        ).scalar()
+        has_vector = conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")).scalar()
         if not has_vector:
             raise RuntimeError("расширение pgvector не установлено (нужен make migrate)")
 

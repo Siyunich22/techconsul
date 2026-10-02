@@ -1,26 +1,34 @@
 # Прогресс
 
-**Текущая фаза: 1 — Кабинет и портфель** (TZ §12) — не начата
+**Текущая фаза: 2 — Загрузка и ingest** (TZ §12) — не начата
 
-## Фаза 0 — Каркас ✅ принята 2026-10-02
+## Фаза 1 — Кабинет и портфель ✅ принята 2026-10-02
 
-Критерий приёмки: `make up` поднимает всё; `/health` = ok; страница логина открывается.
+Критерий приёмки: e2e «регистрация → создание проекта → он в портфеле»; тест изоляции org.
 
 | Проверка | Результат |
 |---|---|
-| `make up` (docker compose up --build --wait) | ✅ postgres, redis, minio, api, worker, web — healthy; minio-init — exit 0 (бакет + versioning) |
-| `GET :8000/health` | ✅ `{"status":"ok","checks":{"database":"ok","redis":"ok","storage":"ok"}}` |
-| `GET :3000/api/v1/health` (прокси Next → FastAPI) | ✅ 200 ok |
-| `GET :3000/login` | ✅ 200, форма «Вход» |
-| `alembic current` | ✅ `0001 (head)` — pgvector, pg_trgm |
-| `make test` — backend (ruff + pytest) | ✅ 6 passed |
-| `make test` — frontend (eslint + next typegen + tsc) | ✅ |
-| `make test-integration` (БД+pgvector, Redis, MinIO, Celery round-trip) | ✅ 4 passed |
-| `make e2e` (Playwright, Chromium) | ✅ 2 passed |
+| e2e: регистрация → эксперт → мастер (паспорт / независимость с конфликтом / команда) → проект в портфеле (таблица, карточки, поиск) | ✅ |
+| e2e: чужая организация получает 404 на проект (API и UI) | ✅ |
+| e2e: восстановление пароля по письму (Mailpit) | ✅ |
+| Тест изоляции org (`tests/api/test_isolation.py`): проекты, команда, эксперты, резюме, приглашения, пользователи, структурный тест org_id | ✅ |
+| Backend: 32 теста (auth, refresh-ротация и reuse-detection, сброс пароля, приглашения, роли, проекты, фильтры, эксперты, загрузки, шаблон) | ✅ |
+| ruff check + ruff format, eslint + tsc | ✅ |
+| Миграция 0002: upgrade → downgrade → upgrade, `alembic check` без расхождений | ✅ |
+
+### Сделано
+- **Backend:** модели Organization, User, Expert, TemplateVersion, Project, ProjectMember, AuditLog, UserToken, RefreshSession; auth (argon2, JWT в httpOnly cookie, refresh-ротация), сброс пароля, приглашения; кабинет (профиль, организация, логотип, reference.docx, настройки отчёта, пользователи); реестр экспертов с резюме в S3; проекты (CRUD, фильтры, поиск, сортировка, пагинация, архив, независимость, команда с разделами из YAML); справочники (ОКЭД, регионы РК, валюты); аудит всех действий.
+- **Frontend:** вход, регистрация, восстановление пароля, приглашение; портфель (таблица/карточки, фильтры, поиск, пагинация); мастер нового проекта (3 шага); карточка проекта (общие сведения, независимость, команда; вкладки фаз 2–8 — заглушки); кабинет (профиль, организация + пользователи, эксперты).
+- **Инфраструктура:** Mailpit в compose; `make seed` — демо-организация (`demo@techocenka.kz` / `demo-pass-1`), 4 эксперта, 3 проекта.
+
+### Перенесено
+- Фильтр по уровню риска, дашборд, экспорт портфеля XLSX — фазы 6/9 (D-023).
+- «Мои задачи» — фаза 7, «Использование» — фаза 9, администрирование шаблонов — фаза 3.
+
+## Фаза 0 — Каркас ✅ принята 2026-10-02
+
+`make up` поднимает стек, `/health` = ok, страница логина открывается; `make test`, `make test-integration`, `make e2e` — зелёные. Отклонение: локальный MinIO — `bitnamilegacy/minio` (D-011).
 
 ### Окружение разработки
 Python 3.12, Node.js 24.19, Git 2.55, WSL2, Docker Desktop (server 29.8.1), Chromium для Playwright.
-На Windows вместо `make` — `.\make.ps1 <цель>`.
-
-### Отклонения от ТЗ
-- Локальный MinIO — `bitnamilegacy/minio` (официальные образы сняты), см. D-011.
+На Windows вместо `make` — `.\make.ps1 <цель>`. Mailpit: http://localhost:8025.

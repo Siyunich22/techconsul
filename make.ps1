@@ -14,7 +14,7 @@ function Invoke-Step([string]$cmd) {
 
 function Ensure-Env { if (-not (Test-Path .env)) { Copy-Item .env.example .env } }
 
-$apiRun = "docker compose run --rm --no-deps api"
+$apiRun = "docker compose run --rm api"  # нужен Postgres для тестовой БД
 $webRun = "docker compose run --rm --no-deps web"
 
 switch ($Target) {
@@ -23,7 +23,7 @@ switch ($Target) {
     "logs"             { Invoke-Step "docker compose logs -f --tail=200" }
     "ps"               { Invoke-Step "docker compose ps" }
     "migrate"          { Invoke-Step "docker compose exec api alembic upgrade head" }
-    "seed"             { Write-Host "make seed: появится в фазах 1-2 (см. docs/PROGRESS.md)" }
+    "seed"             { Invoke-Step "docker compose exec api python -m app.seed" }
     "test"             { Ensure-Env
                          Invoke-Step "$apiRun sh -c 'ruff check . && pytest'"
                          Invoke-Step "$webRun sh -c 'npm run lint && npm run typecheck'" }

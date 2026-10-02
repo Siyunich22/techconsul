@@ -28,6 +28,12 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    # Тесты передают готовое соединение к тестовой БД через config.attributes["connection"].
+    if (connection := config.attributes.get("connection")) is not None:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
