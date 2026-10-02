@@ -7,6 +7,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { DocumentsTab } from "@/components/documents/documents-tab";
 import { IndependenceForm } from "@/components/project/independence-form";
 import { PassportForm } from "@/components/project/passport-form";
 import { TeamForm } from "@/components/project/team-form";
@@ -21,10 +22,10 @@ import { qk, useExperts, useMe, useProject, useTemplateSections } from "@/lib/ho
 import type { Independence, MemberInput, PassportInput, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Tab = "overview" | "independence" | "team";
+type Tab = "overview" | "independence" | "team" | "documents";
+const TABS: Tab[] = ["overview", "independence", "team", "documents"];
 // Вкладки следующих фаз (TZ §4.5 А–Ж) — номер фазы из TZ §12.
 const FUTURE_TABS: [string, number][] = [
-  ["documents", 2],
   ["extracted", 4],
   ["assessment", 5],
   ["sections", 7],
@@ -62,6 +63,16 @@ export default function ProjectPage() {
   const canManage = me.data?.role === "manager" || me.data?.role === "admin";
   const project = useProject(id);
   const [tab, setTab] = useState<Tab>("overview");
+  const [deepLink, setDeepLink] = useState<{ docId: string; page: number; q?: string }>();
+
+  // ?tab=documents&doc=<id>&page=<n>&q=<фрагмент> — переход по ссылке-источнику
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("tab") as Tab | null;
+    if (requested && TABS.includes(requested)) setTab(requested);
+    const doc = params.get("doc");
+    if (doc) setDeepLink({ docId: doc, page: Number(params.get("page") ?? 1), q: params.get("q") ?? undefined });
+  }, []);
 
   const invalidate = (p: Project) => {
     queryClient.setQueryData(qk.project(id), p);
@@ -133,9 +144,9 @@ export default function ProjectPage() {
       </div>
 
       <div className="flex gap-1 overflow-x-auto border-b">
-        {(["overview", "independence", "team"] as Tab[]).map((key) => (
+        {TABS.map((key) => (
           <TabButton key={key} active={tab === key} onClick={() => setTab(key)}>
-            {key === "overview" ? t("tabs.overview") : t(key)}
+            {key === "overview" || key === "documents" ? t(`tabs.${key}`) : t(key)}
           </TabButton>
         ))}
         {FUTURE_TABS.map(([key, phase]) => (
@@ -148,6 +159,7 @@ export default function ProjectPage() {
       {tab === "overview" && <OverviewTab project={p} canEdit={canManage} onSaved={invalidate} />}
       {tab === "independence" && <IndependenceTab project={p} canEdit={canManage} onSaved={invalidate} />}
       {tab === "team" && <TeamTab project={p} canEdit={canManage} onSaved={invalidate} />}
+      {tab === "documents" && <DocumentsTab projectId={p.id} canDelete={canManage} initialPreview={deepLink} />}
     </div>
   );
 }

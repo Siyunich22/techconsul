@@ -41,6 +41,7 @@ def pytest_collection_modifyitems(config, items):
 class FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[str, tuple[bytes, str]] = {}
+        self.multipart: dict[str, dict] = {}
 
     def put(self, key: str, data, content_type: str) -> None:
         assert key not in self.objects, "файлы неизменяемы: ключ не должен повторяться"
@@ -49,6 +50,79 @@ class FakeStorage:
     def get(self, key: str) -> StoredObject:
         body, ctype = self.objects[key]
         return StoredObject(body=iter([body]), content_type=ctype, size=len(body))
+
+    def download(self, key: str, path: Path) -> None:
+        path.write_bytes(self.objects[key][0])
+
+    def create_multipart(self, key: str, content_type: str) -> str:
+        upload_id = uuid.uuid4().hex
+        self.multipart[upload_id] = {"key": key, "ctype": content_type, "parts": {}}
+        return upload_id
+
+    def upload_part(self, key: str, upload_id: str, part_no: int, data: bytes) -> str:
+        self.multipart[upload_id]["parts"][part_no] = data
+        return f'"etag-{part_no}"'
+
+    def complete_multipart(self, key: str, upload_id: str, parts: dict[int, str]) -> None:
+        mp = self.multipart.pop(upload_id)
+        assert key not in self.objects
+        self.objects[key] = (b"".join(mp["parts"][n] for n in sorted(parts)), mp["ctype"])
+
+    def abort_multipart(self, key: str, upload_id: str) -> None:
+        self.multipart.pop(upload_id, None)
+
+
+class FakeLLM:
+    """Мок LLM: по умолчанию «недоступен» (классификация по правилам); answers — очередь ответов."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.answers: list = []
+
+    def structured(self, *, ctx, role, system, user, schema, max_tokens=4096):
+        from app.llm.client import LLMUnavailable
+
+        self.calls.append({"purpose": ctx.purpose, "role": role, "system": system, "user": user})
+        if not self.answers:
+            raise LLMUnavailable("FakeLLM: ответов нет")
+        answer = self.answers.pop(0)
+        return schema.model_validate(answer)
+
+
+class SyncEnqueuer:
+    """Выполняет конвейер сразу (вместо Celery) в той же тестовой сессии БД."""
+
+    def __init__(self, db, storage) -> None:
+        self.db, self.storage = db, storage
+        self.ingested: list[uuid.UUID] = []
+
+    def ingest(self, doc_id: uuid.UUID) -> None:
+        from app.pipeline import process
+
+        self.ingested.append(doc_id)
+        process.ingest_document(
+            self.db, self.storage, doc_id, self.ingest, lambda d: process.index_document(self.db, d)
+        )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _test_settings():
+    """Тесты не скачивают модель эмбеддингов: детерминированный HashEmbedder той же размерности."""
+    from app.pipeline.embedder import get_embedder
+
+    get_settings().embedder = "hash"
+    get_embedder.cache_clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def llm():
+    from app.llm.client import set_llm_override
+
+    fake = FakeLLM()
+    set_llm_override(fake)
+    yield fake
+    set_llm_override(None)
 
 
 class FakeMailer:
@@ -114,12 +188,27 @@ def mailer() -> FakeMailer:
 
 
 @pytest.fixture
-def app(db, storage, mailer):
+def enqueuer(db, storage) -> SyncEnqueuer:
+    return SyncEnqueuer(db, storage)
+
+
+@pytest.fixture
+def app(db, storage, mailer, enqueuer):
     """Приложение всегда работает через тестовую сессию с откатом — никогда через dev-БД."""
+    from app.api.admin import get_reference_enqueuer
+    from app.pipeline import references
+    from app.services.documents import get_enqueuer
+
+    class SyncReferenceEnqueuer:
+        def ingest(self, ref_id):
+            references.ingest_reference(db, storage, ref_id)
+
     app = create_app(register_default_template=False)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_mailer] = lambda: mailer
+    app.dependency_overrides[get_enqueuer] = lambda: enqueuer
+    app.dependency_overrides[get_reference_enqueuer] = lambda: SyncReferenceEnqueuer()
     return app
 
 
@@ -165,3 +254,42 @@ def register(new_client) -> Callable[..., TestClient]:
 
 def pdf_file(name: str = "cv.pdf") -> tuple[str, io.BytesIO, str]:
     return (name, io.BytesIO(b"%PDF-1.4 test cv"), "application/pdf")
+
+
+def upload_file(
+    client: TestClient, project_id: str, filename: str, data: bytes, relative_path: str = ""
+) -> dict:
+    """Загрузка частями через API, как это делает фронтенд."""
+    init = client.post(
+        f"/api/v1/projects/{project_id}/uploads",
+        json={"filename": filename, "size": len(data), "relative_path": relative_path},
+    )
+    assert init.status_code == 201, init.text
+    info = init.json()
+    size = info["chunk_size"]
+    for n in range(info["parts_total"]):
+        part = client.put(
+            f"/api/v1/projects/{project_id}/uploads/{info['upload_id']}/parts/{n + 1}",
+            content=data[n * size : (n + 1) * size],
+        )
+        assert part.status_code == 204, part.text
+    done = client.post(f"/api/v1/projects/{project_id}/uploads/{info['upload_id']}/complete")
+    assert done.status_code == 200, done.text
+    return done.json()
+
+
+@pytest.fixture(scope="session")
+def sample_files(tmp_path_factory) -> Path:
+    from tests.fixtures.sample_project.generate import generate
+
+    return generate(tmp_path_factory.mktemp("sample_project"))
+
+
+@pytest.fixture
+def project(register) -> tuple[TestClient, dict]:
+    c = register()
+    p = c.post(
+        "/api/v1/projects", json={"name": "Мукомольный завод 300 т/сут", "customer_name": "ТОО «Агро»"}
+    )
+    assert p.status_code == 201, p.text
+    return c, p.json()

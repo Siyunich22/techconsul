@@ -20,6 +20,21 @@ dependencies = [
     "pyjwt>=2.10",
     "python-multipart>=0.0.18",
     "email-validator>=2.2",
+    # LLM
+    "anthropic>=0.70",
+    # ingest
+    "pymupdf>=1.25",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "python-pptx>=1.0",
+    "pytesseract>=0.3.13",
+    "pillow>=11.0",
+    "ezdxf>=1.3",
+    "matplotlib>=3.9",
+    "extract-msg>=0.52",
+    # индекс
+    "fastembed>=0.5",
 ]
 
 [project.optional-dependencies]
@@ -51,3 +66,6 @@ extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/fixtures/**" = ["E501"]  # тексты синтетических документов

@@ -42,6 +42,52 @@ def assignable_sections(template: dict) -> list[AssignableSection]:
     return result
 
 
+@dataclass(frozen=True)
+class TemplateItem:
+    id: str
+    title: str
+    section_id: str
+    inputs: tuple[str, ...]
+    requires_reference: tuple[str, ...]
+    node: dict
+
+
+def iter_items(template: dict, enabled_optional: list[str] | tuple[str, ...] = ()) -> list[TemplateItem]:
+    """Пункты шаблона по порядку; пункты выключенных необязательных разделов пропускаются."""
+    result: list[TemplateItem] = []
+
+    def visit(node: dict, section_id: str, enabled: bool) -> None:
+        node_id = str(node.get("id", ""))
+        if node.get("enabled", True) is False and node_id not in enabled_optional:
+            enabled = False
+        if not enabled:
+            return
+        children = node.get("subsections") or node.get("items")
+        if children:
+            # пункты получают id ближайшего узла с items (подраздел 3.4 или раздел 2)
+            for child in children:
+                visit(child, node_id if node.get("items") else section_id, enabled)
+        elif node_id:
+            result.append(
+                TemplateItem(
+                    id=node_id,
+                    title=node.get("title", ""),
+                    section_id=section_id,
+                    inputs=tuple(node.get("inputs", [])),
+                    requires_reference=tuple(node.get("requires_reference", [])),
+                    node=node,
+                )
+            )
+
+    for section in template["sections"]:
+        visit(section, str(section["id"]), True)
+    return result
+
+
+def document_categories(template: dict) -> dict[str, str]:
+    return dict(template.get("document_categories") or {})
+
+
 def _to_assignable(node: dict) -> AssignableSection:
     return AssignableSection(
         id=str(node["id"]),

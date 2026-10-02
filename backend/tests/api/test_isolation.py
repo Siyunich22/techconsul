@@ -72,8 +72,10 @@ def test_org_and_users_are_own(register):
 
 def test_every_tenant_table_has_org_id():
     """Все таблицы с данными организаций обязаны иметь org_id (или принадлежать проекту/пользователю)."""
-    global_tables = {"template_versions"}  # глобальный справочник платформы
-    via_parent = {"project_members", "refresh_sessions", "user_tokens"}  # FK на project/user с org_id
+    # глобальные справочники платформы (шаблоны ТЗ, справочная библиотека НДТ/кодексов)
+    global_tables = {"template_versions", "reference_docs", "reference_chunks"}
+    # FK на project/user/document с org_id
+    via_parent = {"project_members", "refresh_sessions", "user_tokens", "document_pages"}
     for name, table in Base.metadata.tables.items():
         if name in global_tables | via_parent:
             continue

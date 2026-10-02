@@ -175,3 +175,64 @@ export interface AssignableSection {
   optional: boolean;
   extension: boolean;
 }
+
+export type DocumentStatus = "uploaded" | "processing" | "recognized" | "indexed" | "extracted" | "error";
+
+export interface ProjectDocument {
+  id: string;
+  parent_id: string | null;
+  filename: string;
+  relative_path: string;
+  mime: string;
+  size: number;
+  kind: string;
+  pages: number | null;
+  category: string | null;
+  category_source: "rules" | "llm" | "user" | null;
+  category_confidence: number | null;
+  status: DocumentStatus;
+  error: string | null;
+  ocr_pages: number;
+  chunk_count: number;
+  meta: Record<string, unknown>;
+  uploaded_at: string;
+  processed_at: string | null;
+}
+
+export interface DocumentPage {
+  page_no: number;
+  pages_total: number;
+  sheet: string | null;
+  text: string;
+  tables: { title: string | null; cell_range: string | null; rows: string[][] }[];
+  ocr: boolean;
+  has_image: boolean;
+}
+
+export interface Completeness {
+  documents_total: number;
+  documents_processing: number;
+  documents_failed: number;
+  categories: { code: string; title: string; documents: number; required_by: string[] }[];
+  items: { item_id: string; title: string; inputs: string[]; available: string[]; status: "full" | "partial" | "none" }[];
+  missing: { code: string; title: string; partial_items: string[]; blocked_items: string[] }[];
+  missing_references: { kind: string; items: string[] }[];
+  items_full: number;
+  items_partial: number;
+  items_none: number;
+}
+
+export interface ReferenceDoc {
+  id: string;
+  title: string;
+  kind: "ndt" | "law" | "norm" | "standard" | "other";
+  filename: string;
+  size: number;
+  pages: number | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  status: DocumentStatus;
+  error: string | null;
+  chunk_count: number;
+  created_at: string;
+}

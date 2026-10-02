@@ -11,6 +11,8 @@ x-backend-env: &backend-env
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
   COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  EMBEDDER: ${EMBEDDER:-fastembed}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
   S3_ENDPOINT_URL: http://minio:9000
   S3_ACCESS_KEY: ${MINIO_ROOT_USER:-techocenka}
   S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-techocenka-secret}
@@ -87,12 +89,13 @@ services:
 
   api:
     build: ./backend
+    image: techocenka-backend:dev  # один образ для api и воркеров
     environment: *backend-env
     command: >
       sh -c "alembic upgrade head &&
       uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"
     ports: ["${API_PORT:-8000}:8000"]
-    volumes: ["./backend:/app", "./templates:/templates:ro"]
+    volumes: ["./backend:/app", "./templates:/templates:ro", "models:/models"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -104,11 +107,23 @@ services:
       retries: 12
       start_period: 20s
 
+  # разбор, OCR, LibreOffice, распаковка — параллельно
   worker:
     build: ./backend
+    image: techocenka-backend:dev  # один образ для api и воркеров
     environment: *backend-env
-    command: celery -A workers.celery_app worker --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-4}
+    command: celery -A workers.celery_app worker -Q ingest,default --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-4} -n ingest@%h
     volumes: ["./backend:/app", "./templates:/templates:ro"]
+    depends_on:
+      api: {condition: service_healthy}
+
+  # эмбеддинги: модель (~2 ГБ) загружена один раз, поэтому один процесс
+  worker-index:
+    build: ./backend
+    image: techocenka-backend:dev  # один образ для api и воркеров
+    environment: *backend-env
+    command: celery -A workers.celery_app worker -Q index --loglevel=INFO --concurrency=1 -n index@%h
+    volumes: ["./backend:/app", "./templates:/templates:ro", "models:/models"]
     depends_on:
       api: {condition: service_healthy}
 
@@ -128,3 +143,4 @@ services:
 volumes:
   pgdata:
   miniodata:
+  models:

@@ -19,3 +19,6 @@ playwright-report/
 Thumbs.db
 .idea/
 .vscode/
+
+# сгенерированные тестовые данные (make seed / pytest)
+backend/tests/fixtures/sample_project/files/

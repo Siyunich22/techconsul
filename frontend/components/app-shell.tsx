@@ -38,6 +38,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const nav = [
     { href: "/portfolio", label: t("nav.portfolio"), active: pathname.startsWith("/portfolio") || pathname.startsWith("/projects") },
     { href: "/account/profile", label: t("nav.account"), active: pathname.startsWith("/account") },
+    ...(me.data.role === "admin"
+      ? [{ href: "/admin/reference-docs", label: t("admin.nav"), active: pathname.startsWith("/admin") }]
+      : []),
   ];
 
   return (

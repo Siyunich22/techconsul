@@ -5,6 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import { api, queryString } from "@/lib/api";
 import type {
   AssignableSection,
+  Completeness,
+  DocumentPage,
+  ProjectDocument,
   Expert,
   Me,
   Org,
@@ -78,4 +81,28 @@ export const useTemplateSections = (templateId: string | undefined) =>
     queryFn: () => api.get<AssignableSection[]>(`/templates/${templateId}/sections`),
     enabled: Boolean(templateId),
     staleTime: Infinity,
+  });
+
+const ACTIVE: string[] = ["uploaded", "processing", "recognized"];
+
+export const useDocuments = (projectId: string) =>
+  useQuery({
+    queryKey: ["documents", projectId],
+    queryFn: () => api.get<ProjectDocument[]>(`/projects/${projectId}/documents`),
+    // пока есть файлы в обработке — опрашиваем статусы (SSE для прогона оценки — фаза 5)
+    refetchInterval: (q) => (q.state.data?.some((d) => ACTIVE.includes(d.status)) ? 2000 : false),
+  });
+
+export const useCompleteness = (projectId: string, docsVersion: string) =>
+  useQuery({
+    queryKey: ["completeness", projectId, docsVersion],
+    queryFn: () => api.get<Completeness>(`/projects/${projectId}/completeness`),
+    placeholderData: (prev) => prev,
+  });
+
+export const useDocumentPage = (projectId: string, docId: string | null, page: number) =>
+  useQuery({
+    queryKey: ["document-page", projectId, docId, page],
+    queryFn: () => api.get<DocumentPage>(`/projects/${projectId}/documents/${docId}/pages/${page}`),
+    enabled: Boolean(docId),
   });

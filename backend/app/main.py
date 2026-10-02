@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import auth, catalog, health, org, projects
+from app.api import admin, auth, catalog, documents, health, org, projects
 from app.core.config import get_settings
 from app.core.db import get_sessionmaker
 from app.template_engine.loader import ensure_default_template
@@ -29,7 +29,15 @@ def create_app(*, register_default_template: bool = True) -> FastAPI:
     # /health — для docker healthcheck; /api/v1/health — для фронтенда через прокси.
     app.include_router(health.router)
     app.include_router(health.router, prefix=settings.api_prefix)
-    for router in (auth.router, auth.me_router, org.router, projects.router, catalog.router):
+    for router in (
+        auth.router,
+        auth.me_router,
+        org.router,
+        projects.router,
+        documents.router,
+        catalog.router,
+        admin.router,
+    ):
         app.include_router(router, prefix=settings.api_prefix)
     return app
 
