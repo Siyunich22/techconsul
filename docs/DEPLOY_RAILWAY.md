@@ -9,10 +9,12 @@
 | `postgres` | шаблон **pgvector** (образ `pgvector/pgvector:pg16`) + том | — | 0,5–1 ГБ RAM |
 | `redis` | Database → Redis | — | 256 МБ |
 | `minio` *(или внешний S3)* | Docker image `bitnamilegacy/minio:2025.5.24` + том `/bitnami/minio/data` | — | 512 МБ |
-| `api` | GitHub, root directory — **корень репо** | `/backend/railway.api.json` | 1 ГБ |
+| `api` | GitHub, root directory — **корень репо** | `/railway.json` (подхватывается автоматически) | 1 ГБ |
 | `worker` | тот же репо | `/backend/railway.worker.json` | 2 ГБ (OCR, LibreOffice) |
 | `worker-index` | тот же репо | `/backend/railway.worker-index.json` + том `/models` | **3–4 ГБ** (модель e5-large) |
 | `web` | тот же репо, root directory — **`/frontend`** | `/frontend/railway.json` | 512 МБ |
+
+⚠ Если в логе сборки «Railpack could not determine how to build the app» — сервис не нашёл конфиг и включил автосборщик. Для `worker` и `worker-index` обязательно укажите путь к конфигу в **Settings → Config-as-code → Railway Config File**; для `web` — **Root Directory = `/frontend`**.
 
 `api`, `worker`, `worker-index` собираются из одного `backend/Dockerfile` (контекст — корень репо, в образ попадают шаблоны ТЗ из `templates/`). Отличаются только командой запуска в конфиге.
 
