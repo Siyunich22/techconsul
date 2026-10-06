@@ -1,19 +1,21 @@
-"""Администрирование платформы: справочная библиотека (TZ §2, §13 — справочники НДТ входят в фазу 2)."""
+"""Администрирование платформы: справочная библиотека (TZ §13), шаблоны ТЗ (TZ §8)."""
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, DbSession, Principal
 from app.core.config import get_settings
 from app.core.storage import Storage, get_storage, make_key
-from app.models import ReferenceDoc, ReferenceKind, UserRole
+from app.models import ReferenceDoc, ReferenceKind, TemplateVersion, UserRole
 from app.pipeline.ingest import is_supported, mime_for
 from app.pipeline.references import search_references
 from app.schemas.document import ReferenceDocOut
+from app.services import templates as templates_svc
 from app.services.audit import audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -101,3 +103,95 @@ def search_reference_docs(
     _: AdminPrincipal, db: DbSession, q: str, k: int = 8, kind: list[str] | None = None
 ):
     return search_references(db, q, k=k, kinds=kind)
+
+
+# --- шаблоны ТЗ (TZ §8) ---
+
+
+class TemplateAdminOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    title: str
+    is_default: bool
+    created_at: datetime
+    projects: int
+    warnings: list[dict]
+    summary: dict
+
+
+def _template_out(tv: TemplateVersion, usage: dict) -> TemplateAdminOut:
+    return TemplateAdminOut(
+        id=tv.id,
+        code=tv.code,
+        title=tv.title,
+        is_default=tv.is_default,
+        created_at=tv.created_at,
+        projects=usage.get(tv.id, 0),
+        warnings=tv.warnings_json or [],
+        summary=templates_svc.summary(tv),
+    )
+
+
+async def _read_yaml(file: UploadFile | None, yaml_text: str | None) -> str:
+    if file is not None:
+        raw = await file.read()
+        if len(raw) > 2 * 1024**2:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Шаблон больше 2 МБ")
+        try:
+            return raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "Шаблон должен быть в кодировке UTF-8"
+            ) from exc
+    if yaml_text:
+        return yaml_text
+    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Передайте файл YAML или текст шаблона")
+
+
+@router.get("/templates", response_model=list[TemplateAdminOut])
+def list_templates(_: AdminPrincipal, db: DbSession):
+    usage = templates_svc.usage_counts(db)
+    rows = db.scalars(
+        select(TemplateVersion).order_by(TemplateVersion.is_default.desc(), TemplateVersion.created_at)
+    )
+    return [_template_out(tv, usage) for tv in rows]
+
+
+@router.post("/templates/validate")
+async def validate_template(
+    _: AdminPrincipal,
+    file: Annotated[UploadFile | None, File()] = None,
+    yaml_text: Annotated[str | None, Form()] = None,
+):
+    """Проверка без сохранения: ошибки блокируют загрузку, предупреждения — нет."""
+    data, issues = templates_svc.check(await _read_yaml(file, yaml_text))
+    return {
+        "valid": data is not None and not any(i.level == "error" for i in issues),
+        "code": data.get("code") if data else None,
+        "title": data.get("title") if data else None,
+        "issues": [i.as_dict() for i in issues],
+    }
+
+
+@router.post("/templates", response_model=TemplateAdminOut, status_code=status.HTTP_201_CREATED)
+async def upload_template(
+    principal: AdminPrincipal,
+    db: DbSession,
+    file: Annotated[UploadFile | None, File()] = None,
+    yaml_text: Annotated[str | None, Form()] = None,
+    make_default: Annotated[bool, Form()] = False,
+):
+    tv = templates_svc.create(db, principal, await _read_yaml(file, yaml_text), make_default)
+    return _template_out(tv, templates_svc.usage_counts(db))
+
+
+@router.post("/templates/{template_id}/default", response_model=TemplateAdminOut)
+def make_default_template(template_id: uuid.UUID, principal: AdminPrincipal, db: DbSession):
+    tv = templates_svc.set_default(db, principal, templates_svc.get(db, template_id))
+    db.commit()
+    return _template_out(tv, templates_svc.usage_counts(db))
+
+
+@router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_template(template_id: uuid.UUID, principal: AdminPrincipal, db: DbSession):
+    templates_svc.delete(db, principal, templates_svc.get(db, template_id))

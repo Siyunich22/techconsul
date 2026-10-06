@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -10,7 +11,10 @@ from app.api.deps import CurrentPrincipal, DbSession
 from app.core.reference import CURRENCIES, OKED_SECTIONS, REGIONS_KZ
 from app.models import ProjectStatus, TemplateVersion
 from app.schemas.project import AssignableSectionOut, TemplateBrief
+from app.services import templates as templates_svc
+from app.services.projects import get_project
 from app.template_engine.loader import assignable_sections, parse_template
+from app.template_engine.tree import build_tree
 
 router = APIRouter(tags=["catalog"])
 
@@ -45,6 +49,48 @@ def reference(_: CurrentPrincipal):
 def list_templates(_: CurrentPrincipal, db: DbSession):
     stmt = select(TemplateVersion).order_by(TemplateVersion.is_default.desc(), TemplateVersion.created_at)
     return db.scalars(stmt).all()
+
+
+class TemplateDetailOut(TemplateOut):
+    summary: dict
+    warnings: list[dict]
+    document_categories: dict[str, str]
+    tree: list[dict]
+
+
+@router.get("/templates/{template_id}", response_model=TemplateDetailOut)
+def template_detail(template_id: uuid.UUID, _: CurrentPrincipal, db: DbSession):
+    tv = templates_svc.get(db, template_id)
+    data = parse_template(tv.yaml_text)
+    return TemplateDetailOut(
+        id=tv.id,
+        code=tv.code,
+        title=tv.title,
+        is_default=tv.is_default,
+        summary=templates_svc.summary(tv),
+        warnings=tv.warnings_json or [],
+        document_categories=data.get("document_categories", {}),
+        tree=[n.as_dict() for n in build_tree(data)],
+    )
+
+
+@router.get("/templates/{template_id}/yaml")
+def template_yaml(template_id: uuid.UUID, _: CurrentPrincipal, db: DbSession):
+    tv = templates_svc.get(db, template_id)
+    return Response(
+        tv.yaml_text,
+        media_type="application/x-yaml; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{tv.code}.yaml"'},
+    )
+
+
+@router.get("/projects/{project_id}/items")
+def project_items(project_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession):
+    """Дерево пунктов ТЗ проекта: зафиксированная версия шаблона + включённые необязательные разделы."""
+
+    project = get_project(db, principal, project_id)
+    data = parse_template(project.template_version.yaml_text)
+    return [n.as_dict() for n in build_tree(data, project.enabled_optional_items)]
 
 
 @router.get("/templates/{template_id}/sections", response_model=list[AssignableSectionOut])

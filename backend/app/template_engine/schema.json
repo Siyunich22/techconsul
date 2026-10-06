@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://techocenka.kz/schemas/template.json",
+  "title": "Шаблон ТЗ на оценку технической проработанности",
+  "description": "Формализация эталонного ТЗ банка: структура отчёта, пункты, входные документы, риски. Источник истины для анализа, валидатора и рендера.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "title", "language", "document_categories", "sections"],
+  "properties": {
+    "code": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$", "description": "Уникальный код версии шаблона"},
+    "title": {"type": "string", "minLength": 3},
+    "language": {"enum": ["ru", "kk", "en"]},
+    "document_categories": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-zа-яё0-9_]+$"},
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "expert_roles": {"type": "array", "items": {"$ref": "#/$defs/code"}, "uniqueItems": true},
+    "sections": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/section"}},
+    "validation_rules": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/validationRule"}},
+    "appendices": {"type": "array", "items": {"$ref": "#/$defs/appendix"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$"},
+    "idPattern": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*(\\.\\*)?$", "description": "id пункта или маска «3.4.*»"},
+    "code": {"type": "string", "pattern": "^[a-zа-яё0-9_]+$"},
+    "text": {"type": "string", "minLength": 1},
+    "tool": {"enum": ["project_docs", "web", "calc", "reference"]},
+    "referenceKind": {"enum": ["ndt", "law", "norm", "standard", "other"]},
+    "validationRule": {
+      "enum": [
+        "every_item_present",
+        "sourced_unless_not_disclosed",
+        "gap_fields_required_when_not_disclosed",
+        "min_alternatives_3_4_1",
+        "mandatory_risks_scored_with_rationale_and_mitigation",
+        "all_items_expert_approved",
+        "independence_block_completed",
+        "web_sources_have_url_and_access_date"
+      ]
+    },
+    "outputHints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tables": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+        "figures": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+        "metrics": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+        "min_alternatives": {"type": "integer", "minimum": 1, "maximum": 20}
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "kind", "requirement"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text"},
+        "kind": {"enum": ["analysis", "conclusion", "remarks", "info"]},
+        "requirement": {"$ref": "#/$defs/text"},
+        "inputs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/code"}},
+        "tools": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/tool"}},
+        "output_hints": {"$ref": "#/$defs/outputHints"},
+        "depends_on": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/idPattern"}},
+        "requires_reference": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/referenceKind"}},
+        "expert_role": {"$ref": "#/$defs/code"},
+        "extension": {"type": "boolean", "description": "Дополнение к эталону (п. 5.1.6) — маркируется в отчёте"},
+        "enabled": {"type": "boolean"},
+        "conditional": {"$ref": "#/$defs/text", "description": "Условие применимости; если не выполняется — пункт «не применимо» с обоснованием"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/code"}},
+        "source": {"$ref": "#/$defs/text", "description": "Пункт заполняется из данных платформы, а не агентом"},
+        "render": {"$ref": "#/$defs/code"}
+      }
+    },
+    "subsection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "items"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text"},
+        "expert_role": {"$ref": "#/$defs/code"},
+        "enabled": {"type": "boolean"},
+        "extension": {"type": "boolean"},
+        "intro": {"$ref": "#/$defs/text"},
+        "items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/item"}}
+      }
+    },
+    "scale": {
+      "type": "object",
+      "minProperties": 2,
+      "propertyNames": {"pattern": "^[1-9]$"},
+      "additionalProperties": {"$ref": "#/$defs/text"}
+    },
+    "mandatoryRisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "group", "title"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9]{0,5}$"},
+        "group": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text"},
+        "related": {"type": "array", "items": {"$ref": "#/$defs/idPattern"}}
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "title": {"$ref": "#/$defs/text"},
+        "kind": {"enum": ["info", "risks", "conclusion", "analysis"]},
+        "render": {"$ref": "#/$defs/code"},
+        "intro": {"$ref": "#/$defs/text"},
+        "requirement": {"$ref": "#/$defs/text"},
+        "expert_role": {"$ref": "#/$defs/code"},
+        "enabled": {"type": "boolean"},
+        "extension": {"type": "boolean"},
+        "depends_on": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/idPattern"}},
+        "items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/item"}},
+        "subsections": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/subsection"}},
+        "probability_scale": {"$ref": "#/$defs/scale"},
+        "impact_scale": {"$ref": "#/$defs/scale"},
+        "zones": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["red", "yellow", "green"],
+          "properties": {
+            "red": {"$ref": "#/$defs/text"},
+            "yellow": {"$ref": "#/$defs/text"},
+            "green": {"$ref": "#/$defs/text"}
+          }
+        },
+        "mandatory_risks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/mandatoryRisk"}}
+      },
+      "not": {"required": ["items", "subsections"]},
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "risks"}}, "required": ["kind"]},
+          "then": {"required": ["requirement", "probability_scale", "impact_scale", "zones", "mandatory_risks"]}
+        },
+        {
+          "if": {"not": {"anyOf": [{"required": ["items"]}, {"required": ["subsections"]}]}},
+          "then": {"required": ["kind"]}
+        }
+      ]
+    },
+    "appendix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "render"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 3},
+        "title": {"$ref": "#/$defs/text"},
+        "render": {"enum": ["sources", "coverage", "expert_cvs", "equipment_tables", "risks_xlsx"]},
+        "optional": {"type": "boolean"}
+      }
+    }
+  }
+}

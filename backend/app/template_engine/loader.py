@@ -1,4 +1,4 @@
-"""Загрузка YAML-шаблона ТЗ. Минимум для фазы 1; JSON-схема и полное дерево пунктов — фаза 3."""
+"""Загрузка YAML-шаблона ТЗ; проверка — validate.py, дерево пунктов — tree.py."""
 
 from dataclasses import dataclass
 from functools import lru_cache
@@ -108,9 +108,19 @@ def ensure_default_template(db: Session) -> TemplateVersion:
     existing = db.scalar(select(TemplateVersion).where(TemplateVersion.code == code))
     if existing:
         return existing
+    from app.template_engine.validate import TemplateInvalid, errors_only, validate_text
+
     yaml_text = template_path(code).read_text(encoding="utf-8")
-    data = parse_template(yaml_text)
-    tv = TemplateVersion(code=data["code"], title=data["title"], yaml_text=yaml_text, is_default=True)
+    data, issues = validate_text(yaml_text)
+    if data is None or errors_only(issues):
+        raise TemplateInvalid(errors_only(issues))
+    tv = TemplateVersion(
+        code=data["code"],
+        title=data["title"],
+        yaml_text=yaml_text,
+        is_default=True,
+        warnings_json=[i.as_dict() for i in issues],
+    )
     db.add(tv)
     db.commit()
     return tv

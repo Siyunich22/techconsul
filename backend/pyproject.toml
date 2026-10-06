@@ -16,6 +16,7 @@ dependencies = [
     "celery[redis]>=5.4",
     "boto3>=1.35",
     "pyyaml>=6.0",
+    "jsonschema>=4.23",
     "argon2-cffi>=23.1",
     "pyjwt>=2.10",
     "python-multipart>=0.0.18",

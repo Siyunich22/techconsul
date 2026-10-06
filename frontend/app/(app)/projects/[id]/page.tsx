@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, ArchiveRestore, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -9,6 +9,7 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { DocumentsTab } from "@/components/documents/documents-tab";
 import { IndependenceForm } from "@/components/project/independence-form";
+import { TemplateTree, type TreeNode } from "@/components/template-tree";
 import { PassportForm } from "@/components/project/passport-form";
 import { TeamForm } from "@/components/project/team-form";
 import { ProjectStatusBadge } from "@/components/project-status-badge";
@@ -22,13 +23,12 @@ import { qk, useExperts, useMe, useProject, useTemplateSections } from "@/lib/ho
 import type { Independence, MemberInput, PassportInput, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Tab = "overview" | "independence" | "team" | "documents";
-const TABS: Tab[] = ["overview", "independence", "team", "documents"];
+type Tab = "overview" | "independence" | "team" | "documents" | "sections";
+const TABS: Tab[] = ["overview", "independence", "team", "documents", "sections"];
 // Вкладки следующих фаз (TZ §4.5 А–Ж) — номер фазы из TZ §12.
 const FUTURE_TABS: [string, number][] = [
   ["extracted", 4],
   ["assessment", 5],
-  ["sections", 7],
   ["risks", 6],
   ["coverage", 7],
   ["result", 8],
@@ -146,7 +146,7 @@ export default function ProjectPage() {
       <div className="flex gap-1 overflow-x-auto border-b">
         {TABS.map((key) => (
           <TabButton key={key} active={tab === key} onClick={() => setTab(key)}>
-            {key === "overview" || key === "documents" ? t(`tabs.${key}`) : t(key)}
+            {key === "overview" || key === "documents" || key === "sections" ? t(`tabs.${key}`) : t(key)}
           </TabButton>
         ))}
         {FUTURE_TABS.map(([key, phase]) => (
@@ -160,6 +160,7 @@ export default function ProjectPage() {
       {tab === "independence" && <IndependenceTab project={p} canEdit={canManage} onSaved={invalidate} />}
       {tab === "team" && <TeamTab project={p} canEdit={canManage} onSaved={invalidate} />}
       {tab === "documents" && <DocumentsTab projectId={p.id} canDelete={canManage} initialPreview={deepLink} />}
+      {tab === "sections" && <SectionsTab projectId={p.id} templateId={p.template_version.id} />}
     </div>
   );
 }
@@ -304,6 +305,24 @@ function TeamTab({ project, canEdit, onSaved }: TabProps) {
           />
         </fieldset>
         {canEdit && <SaveBar pending={save.isPending} error={save.error} saved={save.saved} onSave={() => save.mutate(value)} />}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SectionsTab({ projectId, templateId }: { projectId: string; templateId: string }) {
+  const items = useQuery({
+    queryKey: ["project-items", projectId],
+    queryFn: () => api.get<TreeNode[]>(`/projects/${projectId}/items`),
+  });
+  const template = useQuery({
+    queryKey: ["template", templateId],
+    queryFn: () => api.get<{ document_categories: Record<string, string> }>(`/templates/${templateId}`),
+  });
+  return (
+    <Card>
+      <CardContent className="p-6">
+        {items.data && <TemplateTree nodes={items.data} categories={template.data?.document_categories} />}
       </CardContent>
     </Card>
   );

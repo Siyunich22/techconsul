@@ -31,6 +31,10 @@ class TemplateVersion(UUIDPk, Base):
     title: Mapped[str] = mapped_column(String(500))
     yaml_text: Mapped[str] = mapped_column(Text)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    warnings_json: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )  # предупреждения проверки
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
