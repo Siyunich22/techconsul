@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     health_check_timeout_s: float = 3.0
 
     _normalize_db = field_validator("database_url", "test_database_url")(_psycopg_url)
+
+    @model_validator(mode="after")
+    def _production_secrets(self) -> "Settings":
+        """Вне dev слабый JWT-секрет по умолчанию позволил бы подделывать токены входа."""
+        if self.app_env != "dev" and (self.jwt_secret == "change-me" or len(self.jwt_secret) < 32):
+            raise ValueError("JWT_SECRET: задайте случайную строку не короче 32 символов (APP_ENV ≠ dev)")
+        return self
 
 
 @lru_cache

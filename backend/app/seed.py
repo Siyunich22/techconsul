@@ -3,12 +3,14 @@
 Запуск: python -m app.seed  (в контейнере api). Документы sample_project обрабатываются воркерами Celery.
 """
 
+import os
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from app.api.deps import Principal
 from app.cli import create_admin
+from app.core.config import get_settings
 from app.core.db import get_sessionmaker
 from app.core.security import hash_password
 from app.core.storage import get_storage, make_key
@@ -20,9 +22,22 @@ from app.template_engine.loader import ensure_default_template
 
 DEMO_BIN = "000000000001"
 DEMO_EMAIL = "demo@techocenka.kz"
-DEMO_PASSWORD = "demo-pass-1"
 ADMIN_EMAIL = "admin@techocenka.kz"
-ADMIN_PASSWORD = "admin-pass-1"
+# Пароли по умолчанию — только для локальной разработки (APP_ENV=dev). На стендах они обязаны
+# приходить из окружения: иначе любой, кто читал репозиторий, войдёт администратором.
+DEV_PASSWORDS = {"DEMO_PASSWORD": "demo-pass-1", "ADMIN_PASSWORD": "admin-pass-1"}
+
+
+def _password(name: str) -> str:
+    value = os.environ.get(name)
+    if value:
+        return value
+    if get_settings().app_env == "dev":
+        return DEV_PASSWORDS[name]
+    raise SystemExit(
+        f"Задайте {name} в окружении (APP_ENV={get_settings().app_env}) — пароли по умолчанию только для dev"
+    )
+
 
 EXPERTS = [
     ("Ахметов Ержан Серикович", ["технолог"], "КазНТУ им. Сатпаева, инженер-технолог, 2004", 20),
@@ -64,15 +79,15 @@ PROJECTS = [
 
 
 def run() -> None:
-    create_admin(ADMIN_EMAIL, ADMIN_PASSWORD)
+    admin_password, demo_password = _password("ADMIN_PASSWORD"), _password("DEMO_PASSWORD")
+    create_admin(ADMIN_EMAIL, admin_password)
     with get_sessionmaker()() as db:
         ensure_default_template(db)
         if not db.scalar(select(Organization).where(Organization.bin == DEMO_BIN)):
-            _create_demo(db)
+            _create_demo(db, demo_password)
         _upload_sample_project(db)
-    print(
-        f"Вход руководителя: {DEMO_EMAIL} / {DEMO_PASSWORD}; администратор: {ADMIN_EMAIL} / {ADMIN_PASSWORD}"
-    )
+    shown = (demo_password, admin_password) if get_settings().app_env == "dev" else ("***", "***")
+    print(f"Вход руководителя: {DEMO_EMAIL} / {shown[0]}; администратор: {ADMIN_EMAIL} / {shown[1]}")
 
 
 def _upload_sample_project(db) -> None:
@@ -109,14 +124,14 @@ def _upload_sample_project(db) -> None:
     print(f"sample_project: {len(EXPECTED_CATEGORIES)} файлов поставлены в обработку")
 
 
-def _create_demo(db) -> None:
+def _create_demo(db, demo_password: str) -> None:
     org = Organization(name="ТОО «Демо Консалт»", bin=DEMO_BIN, address="г. Астана, пр. Мангилик Ел, 55")
     db.add(org)
     db.flush()
     user = User(
         org_id=org.id,
         email=DEMO_EMAIL,
-        password_hash=hash_password(DEMO_PASSWORD),
+        password_hash=hash_password(demo_password),
         full_name="Демо Руководитель",
         role=UserRole.manager,
         position="Директор",

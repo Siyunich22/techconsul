@@ -26,7 +26,8 @@
 6. Переменные (ниже) → Deploy. Публичный домен — только для `web` (Settings → Networking → Generate Domain); `api` наружу не открываем: браузер ходит в `web`, а он проксирует `/api/*` во внутреннюю сеть.
 7. Администратор платформы: в сервисе `api` → **Shell** (или `railway ssh`):
    `python -m app.cli create-admin admin@example.kz '<пароль>' 'ФИО'`.
-   Демо-данные (необязательно): `python -m app.seed`.
+   Демо-данные (необязательно): `ADMIN_PASSWORD='<пароль>' DEMO_PASSWORD='<пароль>' python -m app.seed` — вне dev пароли по умолчанию запрещены, seed без них не запустится.
+   API не стартует при `APP_ENV` ≠ `dev`, если `JWT_SECRET` короче 32 символов или равен значению по умолчанию.
 
 ## Переменные
 
