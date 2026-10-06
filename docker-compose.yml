@@ -89,7 +89,7 @@ services:
     ports: ["${MAILPIT_SMTP_PORT:-1025}:1025", "${MAILPIT_UI_PORT:-8025}:8025"]
 
   api:
-    build: ./backend
+    build: {context: ., dockerfile: backend/Dockerfile}
     image: techocenka-backend:dev  # один образ для api и воркеров
     environment: *backend-env
     command: >
@@ -110,7 +110,7 @@ services:
 
   # разбор, OCR, LibreOffice, распаковка — параллельно
   worker:
-    build: ./backend
+    build: {context: ., dockerfile: backend/Dockerfile}
     image: techocenka-backend:dev  # один образ для api и воркеров
     environment: *backend-env
     command: celery -A workers.celery_app worker -Q ingest,default --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-4} -n ingest@%h
@@ -120,7 +120,7 @@ services:
 
   # эмбеддинги: модель (~2 ГБ) загружена один раз, поэтому один процесс
   worker-index:
-    build: ./backend
+    build: {context: ., dockerfile: backend/Dockerfile}
     image: techocenka-backend:dev  # один образ для api и воркеров
     environment: *backend-env
     command: celery -A workers.celery_app worker -Q index --loglevel=INFO --concurrency=1 -n index@%h

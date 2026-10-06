@@ -1,7 +1,16 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _psycopg_url(url: str) -> str:
+    """Railway/Heroku отдают postgres:// или postgresql:// — SQLAlchemy нужен драйвер psycopg 3."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
 
 
 class Settings(BaseSettings):
@@ -23,6 +32,7 @@ class Settings(BaseSettings):
     s3_secret_key: str = "techocenka-secret"
     s3_bucket: str = "techocenka"
     s3_region: str = "us-east-1"
+    s3_auto_create_bucket: bool = True  # создать бакет при старте API, если его нет
 
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
@@ -59,6 +69,10 @@ class Settings(BaseSettings):
     embedder: str = "fastembed"  # fastembed | hash (тесты)
     embedding_model: str = "intfloat/multilingual-e5-large"
     embedding_dim: int = 1024  # размерность колонки chunks.embedding (миграция 0003)
+    # worker — эмбеддинг поискового запроса считает worker-index (модель в памяти только у него);
+    # local — в процессе API (тесты, офлайн-разработка)
+    query_embedding_mode: str = "worker"
+    query_embedding_timeout_s: float = 30.0
     classify_llm_threshold: float = 0.6  # ниже — уточняем категорию через LLM
 
     max_cv_size_mb: int = 20
@@ -72,6 +86,8 @@ class Settings(BaseSettings):
 
     db_connect_timeout_s: int = 5
     health_check_timeout_s: float = 3.0
+
+    _normalize_db = field_validator("database_url", "test_database_url")(_psycopg_url)
 
 
 @lru_cache

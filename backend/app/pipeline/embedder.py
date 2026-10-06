@@ -81,3 +81,14 @@ def get_embedder() -> Embedder:
     if s.embedder == "hash":
         return HashEmbedder(s.embedding_dim)
     return FastEmbedder(s.embedding_model, s.embedding_dim)
+
+
+def embed_query(text: str) -> list[float]:
+    """Эмбеддинг поискового запроса. В режиме worker считает worker-index (очередь index):
+    модель (~2 ГБ) живёт только в нём, API остаётся лёгким и не скачивает модель при деплое."""
+    s = get_settings()
+    if s.embedder == "hash" or s.query_embedding_mode == "local":
+        return get_embedder().embed_query(text)
+    from workers.tasks import embed_query_task
+
+    return embed_query_task.delay(text).get(timeout=s.query_embedding_timeout_s)

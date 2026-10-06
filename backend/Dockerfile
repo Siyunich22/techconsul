@@ -19,10 +19,13 @@ RUN apt-get update \
         fonts-dejavu-core fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+# Контекст сборки — корень репозитория: в образ попадают и backend, и шаблоны ТЗ (templates/).
+COPY backend/pyproject.toml ./
 RUN mkdir -p app workers && pip install -e ".[dev]"
 
-COPY . .
+COPY templates/ /templates/
+COPY backend/ .
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# «::» — IPv4 и IPv6 (приватная сеть Railway — IPv6); порт — из $PORT платформы
+CMD ["sh", "-c", "uvicorn app.main:app --host :: --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]

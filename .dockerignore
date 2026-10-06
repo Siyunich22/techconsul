@@ -1,0 +1,12 @@
+# Контекст сборки backend — корень репозитория (backend/Dockerfile); frontend собирается из своей папки.
+.git
+frontend
+docs
+**/__pycache__
+**/*.pyc
+backend/.venv
+backend/.pytest_cache
+backend/.ruff_cache
+backend/*.egg-info
+backend/tests/fixtures/sample_project/files
+.env

@@ -60,6 +60,17 @@ class S3Storage:
             region_name=s.s3_region,
         )
 
+    def ensure_bucket(self) -> None:
+        """Создать бакет, если его нет (Railway/облако — без отдельного init-контейнера)."""
+        from botocore.exceptions import ClientError
+
+        try:
+            self.client.head_bucket(Bucket=self.bucket)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") not in ("404", "NoSuchBucket", "NotFound"):
+                raise
+            self.client.create_bucket(Bucket=self.bucket)
+
     def put(self, key: str, data: BinaryIO, content_type: str) -> None:
         self.client.upload_fileobj(data, self.bucket, key, ExtraArgs={"ContentType": content_type})
 

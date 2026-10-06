@@ -22,6 +22,7 @@ celery_app.conf.update(
         "documents.ingest": {"queue": "ingest"},
         "documents.index": {"queue": "index"},
         "references.ingest": {"queue": "index"},
+        "index.embed_query": {"queue": "index"},
     },
 )
 

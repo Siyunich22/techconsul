@@ -152,9 +152,9 @@ def search_project(
     categories: list[str] | None = None,
 ) -> list[SearchHit]:
     """Гибридный поиск по документам проекта: полнотекст (russian) + косинус по эмбеддингам, слияние RRF."""
-    from app.pipeline.embedder import get_embedder
+    from app.pipeline.embedder import embed_query
 
-    emb = get_embedder().embed_query(query)
+    emb = embed_query(query)
     cat = "AND c.document_id IN (SELECT id FROM documents WHERE category = ANY(:cats))" if categories else ""
     params = {
         "q": query,

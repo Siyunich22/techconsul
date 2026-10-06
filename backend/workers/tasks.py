@@ -28,6 +28,14 @@ def index_document_task(doc_id: str) -> None:
         process.index_document(db, uuid.UUID(doc_id))
 
 
+@celery_app.task(name="index.embed_query")
+def embed_query_task(text: str) -> list[float]:
+    """Эмбеддинг поискового запроса для API (модель загружена только в worker-index)."""
+    from app.pipeline.embedder import get_embedder
+
+    return get_embedder().embed_query(text)
+
+
 @celery_app.task(name="references.ingest")
 def ingest_reference_task(ref_id: str) -> None:
     with get_sessionmaker()() as db:

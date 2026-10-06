@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api import admin, auth, catalog, documents, health, org, projects
 from app.core.config import get_settings
 from app.core.db import get_sessionmaker
+from app.core.storage import _s3
 from app.template_engine.loader import ensure_default_template
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,11 @@ async def lifespan(app: FastAPI):
                 ensure_default_template(db)
         except Exception:  # БД может быть ещё недоступна; /health это покажет
             log.exception("Не удалось зарегистрировать шаблон ТЗ по умолчанию")
+        if get_settings().s3_auto_create_bucket:
+            try:
+                _s3().ensure_bucket()
+            except Exception:  # хранилище может быть ещё недоступно; /health это покажет
+                log.exception("Не удалось проверить/создать бакет хранилища")
     yield
 
 

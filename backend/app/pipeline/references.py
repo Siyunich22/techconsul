@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.storage import Storage
 from app.models import DocumentStatus, ReferenceChunk, ReferenceDoc
-from app.pipeline.embedder import get_embedder
+from app.pipeline.embedder import embed_query, get_embedder
 from app.pipeline.index import chunk_pages
 from app.pipeline.ingest import parse_file
 from app.pipeline.ingest.base import IngestError, Page
@@ -92,7 +92,7 @@ ORDER BY f.score DESC LIMIT :k
 
 
 def search_references(db: Session, query: str, k: int = 8, kinds: list[str] | None = None) -> list[dict]:
-    emb = get_embedder().embed_query(query)
+    emb = embed_query(query)
     kind = (
         "AND c.reference_doc_id IN (SELECT id FROM reference_docs WHERE kind::text = ANY(:kinds))"
         if kinds
