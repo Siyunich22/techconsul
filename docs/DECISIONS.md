@@ -96,6 +96,11 @@
 - **D-052. Совместимость с PaaS:** `postgres://`/`postgresql://` из `DATABASE_URL` приводится к `postgresql+psycopg://`; API слушает `::` (IPv4+IPv6 — приватная сеть Railway) на `$PORT`; бакет S3 создаётся при старте API (`S3_AUTO_CREATE_BUCKET`), отдельный init-сервис не нужен; миграции — `preDeployCommand` сервиса `api`. Конфиги — `backend/railway.{api,worker,worker-index}.json`, `frontend/railway.json`; инструкция — `docs/DEPLOY_RAILWAY.md`.
 - **D-053. Концы строк — LF (`.gitattributes`), кроме `.ps1`.** 37 файлов попали в git с CRLF из-за правок скриптами на Windows; для Linux-контейнеров (Makefile, shell) это опасно.
 
+## 2026-10-13 — Деплой на Railway: исправления
+
+- **D-054. API слушает пустой host (`--host ''`), а не `::`.** Уточнение D-052: с `::` uvicorn слушает только IPv6 (asyncio ставит `IPV6_V6ONLY`), запросы по IPv4 получали «connection refused» — healthcheck `/health` не проходил. Проверено локальной сборкой образов и запуском стека в режиме Railway (`postgres://`, `APP_ENV=staging`, `alembic upgrade head`, оба воркера, прокси `web → api`).
+- **D-055. Для `web` путь к конфигу указывается явно (`/frontend/railway.json`).** Railway не ищет файл конфига относительно Root Directory: без явного пути сервис может взять корневой `railway.json` (конфиг `api`, `backend/Dockerfile`) и не собраться.
+
 ## Из TZ §13 (зафиксировано заранее, реализуется в соответствующих фазах)
 
 - **D-101. П. 6.2 эталона обрывается («Также должна быть представлена»).** Трактуем как требование приложить подтверждающие материалы (п. 5.1.5): источники с документом/страницей или URL+датой и приложение «Список источников».

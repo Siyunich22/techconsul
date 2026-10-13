@@ -12,9 +12,10 @@
 | `api` | GitHub, root directory — **корень репо** | `/railway.json` (подхватывается автоматически) | 1 ГБ |
 | `worker` | тот же репо | `/backend/railway.worker.json` | 2 ГБ (OCR, LibreOffice) |
 | `worker-index` | тот же репо | `/backend/railway.worker-index.json` + том `/models` | **3–4 ГБ** (модель e5-large) |
-| `web` | тот же репо, root directory — **`/frontend`** | `/frontend/railway.json` | 512 МБ |
+| `web` | тот же репо, root directory — **`/frontend`** | `/frontend/railway.json` (указать явно) | 512 МБ |
 
-⚠ Если в логе сборки «Railpack could not determine how to build the app» — сервис не нашёл конфиг и включил автосборщик. Для `worker` и `worker-index` обязательно укажите путь к конфигу в **Settings → Config-as-code → Railway Config File**; для `web` — **Root Directory = `/frontend`**.
+⚠ Если в логе сборки «Railpack could not determine how to build the app» — сервис не нашёл конфиг и включил автосборщик. Для `worker`, `worker-index` и `web` обязательно укажите путь к конфигу в **Settings → Config-as-code → Railway Config File** (путь — от корня репозитория, Root Directory на него не влияет); для `web` дополнительно — **Root Directory = `/frontend`**.
+Без явного пути сервис берёт корневой `/railway.json` — это конфиг `api`: `worker`/`worker-index` запустятся как ещё один API, а `web` не найдёт `backend/Dockerfile` внутри `/frontend`.
 
 `api`, `worker`, `worker-index` собираются из одного `backend/Dockerfile` (контекст — корень репо, в образ попадают шаблоны ТЗ из `templates/`). Отличаются только командой запуска в конфиге.
 

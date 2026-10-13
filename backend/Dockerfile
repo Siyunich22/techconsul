@@ -27,5 +27,6 @@ COPY templates/ /templates/
 COPY backend/ .
 
 EXPOSE 8000
-# «::» — IPv4 и IPv6 (приватная сеть Railway — IPv6); порт — из $PORT платформы
-CMD ["sh", "-c", "uvicorn app.main:app --host :: --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+# Пустой host — все интерфейсы IPv4 и IPv6: приватная сеть Railway — IPv6, healthcheck и прокси — IPv4.
+# («::» в uvicorn слушает только IPv6 — asyncio ставит IPV6_V6ONLY.) Порт — из $PORT платформы.
+CMD ["sh", "-c", "uvicorn app.main:app --host '' --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
