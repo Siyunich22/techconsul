@@ -8,6 +8,7 @@ import { useTranslations } from "next-intl";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { DocumentsTab } from "@/components/documents/documents-tab";
+import { PassportTab } from "@/components/passport/passport-tab";
 import { IndependenceForm } from "@/components/project/independence-form";
 import { TemplateTree, type TreeNode } from "@/components/template-tree";
 import { PassportForm } from "@/components/project/passport-form";
@@ -23,11 +24,10 @@ import { qk, useExperts, useMe, useProject, useTemplateSections } from "@/lib/ho
 import type { Independence, MemberInput, PassportInput, Project } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Tab = "overview" | "independence" | "team" | "documents" | "sections";
-const TABS: Tab[] = ["overview", "independence", "team", "documents", "sections"];
+type Tab = "overview" | "independence" | "team" | "documents" | "passport" | "sections";
+const TABS: Tab[] = ["overview", "independence", "team", "documents", "passport", "sections"];
 // Вкладки следующих фаз (TZ §4.5 А–Ж) — номер фазы из TZ §12.
 const FUTURE_TABS: [string, number][] = [
-  ["extracted", 4],
   ["assessment", 5],
   ["risks", 6],
   ["coverage", 7],
@@ -61,6 +61,8 @@ export default function ProjectPage() {
   const queryClient = useQueryClient();
   const me = useMe();
   const canManage = me.data?.role === "manager" || me.data?.role === "admin";
+  // паспорт извлекают, правят и подтверждают руководитель и эксперты
+  const canReview = canManage || me.data?.role === "expert";
   const project = useProject(id);
   const [tab, setTab] = useState<Tab>("overview");
   const [deepLink, setDeepLink] = useState<{ docId: string; page: number; q?: string }>();
@@ -146,7 +148,7 @@ export default function ProjectPage() {
       <div className="flex gap-1 overflow-x-auto border-b">
         {TABS.map((key) => (
           <TabButton key={key} active={tab === key} onClick={() => setTab(key)}>
-            {key === "overview" || key === "documents" || key === "sections" ? t(`tabs.${key}`) : t(key)}
+            {key === "overview" || key === "documents" || key === "passport" || key === "sections" ? t(`tabs.${key}`) : t(key)}
           </TabButton>
         ))}
         {FUTURE_TABS.map(([key, phase]) => (
@@ -160,6 +162,16 @@ export default function ProjectPage() {
       {tab === "independence" && <IndependenceTab project={p} canEdit={canManage} onSaved={invalidate} />}
       {tab === "team" && <TeamTab project={p} canEdit={canManage} onSaved={invalidate} />}
       {tab === "documents" && <DocumentsTab projectId={p.id} canDelete={canManage} initialPreview={deepLink} />}
+      {tab === "passport" && (
+        <PassportTab
+          projectId={p.id}
+          canEdit={canReview}
+          onOpenSource={(docId, page, q) => {
+            setDeepLink({ docId, page, q });
+            setTab("documents");
+          }}
+        />
+      )}
       {tab === "sections" && <SectionsTab projectId={p.id} templateId={p.template_version.id} />}
     </div>
   );

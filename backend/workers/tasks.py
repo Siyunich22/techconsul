@@ -4,7 +4,7 @@ import uuid
 
 from app.core.db import get_sessionmaker
 from app.core.storage import get_storage
-from app.pipeline import process, references
+from app.pipeline import passport, process, references
 from workers.celery_app import celery_app
 
 
@@ -14,6 +14,10 @@ def enqueue_ingest(doc_id: uuid.UUID) -> None:
 
 def enqueue_index(doc_id: uuid.UUID) -> None:
     index_document_task.delay(str(doc_id))
+
+
+def enqueue_passport(passport_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    extract_passport_task.delay(str(passport_id), str(run_id))
 
 
 @celery_app.task(name="documents.ingest", max_retries=2, default_retry_delay=30)
@@ -40,3 +44,9 @@ def embed_query_task(text: str) -> list[float]:
 def ingest_reference_task(ref_id: str) -> None:
     with get_sessionmaker()() as db:
         references.ingest_reference(db, get_storage(), uuid.UUID(ref_id))
+
+
+@celery_app.task(name="passport.extract")
+def extract_passport_task(passport_id: str, run_id: str) -> None:
+    with get_sessionmaker()() as db:
+        passport.run_extraction(db, uuid.UUID(passport_id), uuid.UUID(run_id))

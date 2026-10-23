@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     llm_model_extract: str = "claude-sonnet-5-5"
     llm_model_cheap: str = "claude-haiku-4-5-20251001"
 
+    # паспорт проекта (TZ §5.2): map по пакетам страниц → reduce
+    passport_batch_chars: int = 60_000  # ≈ 19k токенов текста на один вызов map
+    passport_concurrency: int = 4
+    passport_map_max_tokens: int = 16_000
+    passport_reduce_max_tokens: int = 16_000  # без стриминга — не выше ~16k (таймауты SDK)
+    passport_stale_after_min: int = 60  # «извлекается» дольше — считаем, что воркер упал
+
     db_connect_timeout_s: int = 5
     health_check_timeout_s: float = 3.0
 

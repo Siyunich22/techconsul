@@ -236,3 +236,66 @@ export interface ReferenceDoc {
   chunk_count: number;
   created_at: string;
 }
+
+// --- паспорт проекта (фаза 4) ---
+
+export interface PassportFact {
+  value: string;
+  unit: string;
+  refs: string[];
+  quote: string;
+  confidence: number;
+  manual: boolean;
+}
+
+/** Строка таблицы паспорта: колонки — строки (по макету), плюс источник на уровне строки. */
+export interface PassportRow {
+  refs: string[];
+  quote: string;
+  confidence: number;
+  manual: boolean;
+  [column: string]: string | string[] | number | boolean;
+}
+
+export type PassportSection = Record<string, PassportFact | PassportRow[] | null>;
+export type PassportData = Record<string, PassportSection>;
+
+export interface Discrepancy {
+  field: string;
+  title: string;
+  description: string;
+  severity: "high" | "medium" | "low";
+  values: { value: string; refs: string[] }[];
+  resolution: string;
+}
+
+export interface PassportSource {
+  document_id: string;
+  filename: string;
+  category: string | null;
+  page: number | null;
+  sheet: string | null;
+}
+
+export type PassportStatus = "empty" | "extracting" | "draft" | "confirmed" | "failed";
+
+export interface Passport {
+  status: PassportStatus;
+  data: PassportData;
+  discrepancies: Discrepancy[];
+  sources: Record<string, PassportSource>;
+  progress: { stage: "map" | "reduce" | ""; done: number; total: number };
+  warnings: string[];
+  error: string | null;
+  extracted_at: string | null;
+  updated_at: string | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+}
+
+export interface PassportLayoutSection {
+  key: string;
+  title: string;
+  fields: { key: string; title: string }[];
+  tables: { key: string; title: string; columns: { key: string; title: string }[] }[];
+}

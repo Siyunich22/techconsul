@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import admin, auth, catalog, documents, health, org, projects
+from app.api import admin, auth, catalog, documents, health, org, passport, projects
 from app.core.config import get_settings
 from app.core.db import get_sessionmaker
 from app.core.storage import _s3
@@ -41,6 +41,7 @@ def create_app(*, register_default_template: bool = True) -> FastAPI:
         org.router,
         projects.router,
         documents.router,
+        passport.router,
         catalog.router,
         admin.router,
     ):

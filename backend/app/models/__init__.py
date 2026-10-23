@@ -22,6 +22,7 @@ from app.models.org import (
     UserRole,
     UserToken,
 )
+from app.models.passport import Passport, PassportStatus
 from app.models.project import MemberRole, Project, ProjectMember, ProjectStatus, TemplateVersion
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     "Expert",
     "MemberRole",
     "Organization",
+    "Passport",
+    "PassportStatus",
     "Project",
     "ProjectMember",
     "ProjectStatus",

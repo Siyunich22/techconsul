@@ -73,16 +73,23 @@ class FakeStorage:
 
 
 class FakeLLM:
-    """Мок LLM: по умолчанию «недоступен» (классификация по правилам); answers — очередь ответов."""
+    """Мок LLM: по умолчанию «недоступен» (классификация по правилам); answers — очередь ответов,
+    handler(purpose, user, schema) — ответ по содержимому запроса (для параллельных вызовов)."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.answers: list = []
+        self.handler = None
 
     def structured(self, *, ctx, role, system, user, schema, max_tokens=4096):
         from app.llm.client import LLMUnavailable
 
-        self.calls.append({"purpose": ctx.purpose, "role": role, "system": system, "user": user})
+        self.calls.append(
+            {"purpose": ctx.purpose, "role": role, "system": system, "user": user, "schema": schema.__name__}
+        )
+        if self.handler is not None:
+            answer = self.handler(ctx.purpose, user, schema)
+            return answer if isinstance(answer, schema) else schema.model_validate(answer)
         if not self.answers:
             raise LLMUnavailable("FakeLLM: ответов нет")
         answer = self.answers.pop(0)
@@ -197,7 +204,13 @@ def app(db, storage, mailer, enqueuer):
     """Приложение всегда работает через тестовую сессию с откатом — никогда через dev-БД."""
     from app.api.admin import get_reference_enqueuer
     from app.pipeline import references
+    from app.pipeline.passport import run_extraction
     from app.services.documents import get_enqueuer
+    from app.services.passport import get_passport_enqueuer
+
+    class SyncPassportEnqueuer:
+        def extract(self, passport_id, run_id):
+            run_extraction(db, passport_id, run_id)
 
     class SyncReferenceEnqueuer:
         def ingest(self, ref_id):
@@ -209,6 +222,7 @@ def app(db, storage, mailer, enqueuer):
     app.dependency_overrides[get_mailer] = lambda: mailer
     app.dependency_overrides[get_enqueuer] = lambda: enqueuer
     app.dependency_overrides[get_reference_enqueuer] = lambda: SyncReferenceEnqueuer()
+    app.dependency_overrides[get_passport_enqueuer] = lambda: SyncPassportEnqueuer()
     return app
 
 

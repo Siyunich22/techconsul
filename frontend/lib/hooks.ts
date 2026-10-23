@@ -13,6 +13,8 @@ import type {
   Org,
   OrgUser,
   Page,
+  Passport,
+  PassportLayoutSection,
   Project,
   ProjectListItem,
   Reference,
@@ -105,4 +107,19 @@ export const useDocumentPage = (projectId: string, docId: string | null, page: n
     queryKey: ["document-page", projectId, docId, page],
     queryFn: () => api.get<DocumentPage>(`/projects/${projectId}/documents/${docId}/pages/${page}`),
     enabled: Boolean(docId),
+  });
+
+export const usePassport = (projectId: string) =>
+  useQuery({
+    queryKey: ["passport", projectId],
+    queryFn: () => api.get<Passport>(`/projects/${projectId}/passport`),
+    // пока ИИ извлекает паспорт — опрашиваем прогресс
+    refetchInterval: (q) => (q.state.data?.status === "extracting" ? 2000 : false),
+  });
+
+export const usePassportLayout = () =>
+  useQuery({
+    queryKey: ["passport-layout"],
+    queryFn: () => api.get<PassportLayoutSection[]>("/passport/layout"),
+    staleTime: Infinity,
   });
