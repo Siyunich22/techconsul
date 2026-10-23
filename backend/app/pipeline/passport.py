@@ -264,7 +264,9 @@ def extract(
         if unavailable is not None:
             raise PassportExtractionError(f"ИИ недоступен: {unavailable}")
         if len(warnings) == len(batches):
-            raise PassportExtractionError("Не удалось извлечь паспорт ни из одной части пакета")
+            raise PassportExtractionError(
+                f"Не удалось извлечь паспорт ни из одной части пакета. {warnings[0] if warnings else ''}"
+            )
         return ExtractionResult(PassportData(), [], {}, warnings)
 
     used = {p.label: p for p in pages}

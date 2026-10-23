@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     max_reference_docx_size_mb: int = 20
 
     anthropic_api_key: str = ""
+    # ключ организации без привязки к workspace требует заголовок anthropic-workspace-id
+    anthropic_workspace_id: str = ""
     llm_model_analysis: str = "claude-opus-5-5"
     llm_model_extract: str = "claude-sonnet-5-5"
     llm_model_cheap: str = "claude-haiku-4-5-20251001"

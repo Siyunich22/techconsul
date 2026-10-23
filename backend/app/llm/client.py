@@ -75,10 +75,14 @@ class AnthropicLLM:
     @property
     def client(self) -> anthropic.Anthropic:
         if self._client is None:
-            key = get_settings().anthropic_api_key
-            if not key:
+            s = get_settings()
+            if not s.anthropic_api_key:
                 raise LLMUnavailable("ANTHROPIC_API_KEY не задан")
-            self._client = anthropic.Anthropic(api_key=key, max_retries=4, timeout=600.0)
+            workspace = s.anthropic_workspace_id
+            headers = {"anthropic-workspace-id": workspace} if workspace else None
+            self._client = anthropic.Anthropic(
+                api_key=s.anthropic_api_key, max_retries=4, timeout=600.0, default_headers=headers
+            )
         return self._client
 
     def structured[T: BaseModel](
