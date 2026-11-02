@@ -144,7 +144,9 @@ class AnthropicLLM:
         }
         try:
             if schema is None:
-                response = self.client.messages.create(**params)
+                # длинные ответы (сведение паспорта) — потоком: без него SDK ограничивает max_tokens таймаутом
+                with self.client.messages.stream(**params) as stream:
+                    response = stream.get_final_message()
             else:
                 response = self.client.messages.parse(**params, output_format=schema)
         except anthropic.APIConnectionError as exc:

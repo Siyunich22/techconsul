@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     # паспорт проекта (TZ §5.2): map по пакетам страниц → reduce
     passport_batch_chars: int = 60_000  # ≈ 19k токенов текста на один вызов map
     passport_concurrency: int = 4
-    passport_map_max_tokens: int = 16_000
-    passport_reduce_max_tokens: int = 16_000  # без стриминга — не выше ~16k (таймауты SDK)
+    passport_map_max_tokens: int = 32_000  # ответ потоком (D-066)
+    passport_reduce_max_tokens: int = 64_000  # сведение больших таблиц; потоком
     passport_stale_after_min: int = 60  # «извлекается» дольше — считаем, что воркер упал
 
     db_connect_timeout_s: int = 5

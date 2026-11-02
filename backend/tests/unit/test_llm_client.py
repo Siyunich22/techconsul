@@ -126,7 +126,13 @@ def test_prompt_render_requires_all_variables():
 def test_unconstrained_json_mode_validates_and_retries():
     """Большие схемы: без грамматики structured outputs — схема в промпте, JSON проверяется у нас."""
     messages = FakeMessages([])
-    messages.create = messages.parse  # тот же учёт запросов, но через messages.create
+
+    @contextmanager
+    def stream(**kwargs):  # ответ потоком: тот же учёт запросов, итог — get_final_message()
+        response = messages.parse(**kwargs)
+        yield SimpleNamespace(get_final_message=lambda: response)
+
+    messages.stream = stream
     messages.outcomes = [
         _response(None, text='Вот ответ: {"wrong": 1}'),
         _response(None, text='```json\n{"category": "смета"}\n```'),
