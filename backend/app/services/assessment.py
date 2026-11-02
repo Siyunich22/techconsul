@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
+from types import SimpleNamespace
 from typing import Protocol
 
 from fastapi import HTTPException, status
@@ -13,7 +14,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import Principal
-from app.assessment.runner import lock_key, plan_items, run_cost
+from app.assessment.fingerprint import DocRef, fingerprints
+from app.assessment.runner import _reuse_candidate, lock_key, model_role, plan_items, run_cost
 from app.core.config import get_settings
 from app.models import (
     AssessmentRun,
@@ -42,9 +44,13 @@ from app.schemas.assessment import (
 from app.services.audit import audit
 from app.template_engine.loader import parse_template
 
-# Оценка стоимости пункта агентом (Opus, 5–12 обращений к инструментам), USD — уточняется по факту прогонов
-COST_PER_ITEM_MIN = Decimal("0.15")
-COST_PER_ITEM_MAX = Decimal("0.80")
+# Оценка стоимости пункта агентом (5–12 обращений к инструментам), USD по роли модели — уточняется по
+# факту прогонов (llm_calls.run_id). Выводы — сильная модель (Opus), остальные — Sonnet (вдвое дешевле).
+# Калибровка 2026-11-02 по первому прогону на стенде (Opus, 22 пункта): 0,23–1,34 $, медиана ~0,7 $.
+COST_PER_ITEM = {
+    "analysis": (Decimal("0.25"), Decimal("1.35")),
+    "items": (Decimal("0.12"), Decimal("0.70")),
+}
 MINUTES_PER_ITEM = 3
 
 
@@ -124,11 +130,65 @@ def _docs_processing(db: Session, project: Project) -> int:
     )
 
 
+def _passport_snapshot(passport: Passport) -> dict:
+    return {
+        "data": passport.data_json,
+        "discrepancies": passport.discrepancies_json,
+        "sources": passport.sources_json,
+    }
+
+
+def _doc_refs(db: Session, project: Project) -> list[DocRef]:
+    rows = db.execute(
+        select(Document.id, Document.sha256, Document.category).where(
+            Document.project_id == project.id,
+            Document.org_id == project.org_id,
+            Document.deleted_at.is_(None),
+            Document.status.in_((DocumentStatus.recognized, DocumentStatus.indexed)),
+        )
+    ).all()
+    return [DocRef(*r) for r in rows]
+
+
+def _reusable(db: Session, project: Project, plan, fps: dict[str, str]) -> set[str]:
+    """Пункты, которые прогон возьмёт из прошлого: отпечаток совпал, и зависимости тоже берутся оттуда."""
+    items = {i.id: i for i in plan}
+    memo: dict[str, bool] = {}
+
+    def ok(item_id: str, path: tuple[str, ...] = ()) -> bool:
+        if item_id in memo:
+            return memo[item_id]
+        item = items[item_id]
+        if item.is_info:
+            return True
+        probe = SimpleNamespace(
+            org_id=project.org_id,
+            project_id=project.id,
+            item_id=item_id,
+            fingerprint=fps.get(item_id),
+            run_id=uuid.UUID(int=0),
+        )
+        result = (
+            probe.fingerprint is not None
+            and _reuse_candidate(db, probe) is not None  # type: ignore[arg-type]
+            and all(d not in path and ok(d, (*path, item_id)) for d in item.depends_on if d in items)
+        )
+        memo[item_id] = result
+        return result
+
+    return {i.id for i in plan if not i.is_info and ok(i.id)}
+
+
 def estimate(db: Session, project: Project) -> EstimateOut:
     plan = _plan(project)
     ai = sum(not i.is_info for i in plan)
     passport = _passport(db, project)
     web = _web_allowed(db, project)
+    reused: set[str] = set()
+    if passport is not None:
+        fps = fingerprints(plan, _doc_refs(db, project), _passport_snapshot(passport), web)
+        reused = _reusable(db, project, plan, fps)
+    todo = [i for i in plan if not i.is_info and i.id not in reused]
     warnings = []
     if passport is None or passport.status != PassportStatus.confirmed:
         warnings.append("Паспорт проекта не подтверждён — подтвердите его во вкладке «Паспорт проекта».")
@@ -136,13 +196,28 @@ def estimate(db: Session, project: Project) -> EstimateOut:
         warnings.append("Часть документов ещё обрабатывается.")
     if not web:
         warnings.append("Веб-поиск отключён в настройках организации — внешние источники не используются.")
-    concurrency = max(1, get_settings().analysis_concurrency)
+    if reused:
+        warnings.append(
+            f"Пунктов без изменений с прошлого прогона: {len(reused)} — возьмутся из него без обращения к ИИ."
+        )
+    s = get_settings()
+    concurrency = max(1, s.analysis_concurrency)
+    roles = [model_role(i) for i in todo]
+    last = latest_run(db, project)
+    failed = _failed_items(db, last, plan) if last is not None and not _is_active(db, last) else []
+    resume_roles = [model_role(i) for i in failed if not i.is_info]
     return EstimateOut(
+        resume_items=len(failed),
+        resume_cost_usd_min=sum((COST_PER_ITEM[r][0] for r in resume_roles), Decimal(0)),
+        resume_cost_usd_max=sum((COST_PER_ITEM[r][1] for r in resume_roles), Decimal(0)),
         items_ai=ai,
         items_info=len(plan) - ai,
-        cost_usd_min=COST_PER_ITEM_MIN * ai,
-        cost_usd_max=COST_PER_ITEM_MAX * ai,
-        minutes=math.ceil(ai / concurrency) * MINUTES_PER_ITEM,
+        items_reused=len(reused),
+        items_strong=sum(r == "analysis" for r in roles),
+        budget_usd=Decimal(str(s.analysis_run_budget_usd)) if s.analysis_run_budget_usd > 0 else None,
+        cost_usd_min=sum((COST_PER_ITEM[r][0] for r in roles), Decimal(0)),
+        cost_usd_max=sum((COST_PER_ITEM[r][1] for r in roles), Decimal(0)),
+        minutes=math.ceil(len(todo) / concurrency) * MINUTES_PER_ITEM,
         passport_confirmed=passport is not None and passport.status == PassportStatus.confirmed,
         web_search=web,
         warnings=warnings,
@@ -175,16 +250,21 @@ def start_run(
         started_by=principal.user_id,
         items_total=len(plan),
         web_search=_web_allowed(db, project),
-        passport_json={
-            "data": passport.data_json,
-            "discrepancies": passport.discrepancies_json,
-            "sources": passport.sources_json,
-        },
+        passport_json=_passport_snapshot(passport),
     )
     db.add(run)
     db.flush()
+    fps = fingerprints(plan, _doc_refs(db, project), run.passport_json, run.web_search)
     for item in plan:
-        db.add(SectionResult(org_id=project.org_id, project_id=project.id, run_id=run.id, item_id=item.id))
+        db.add(
+            SectionResult(
+                org_id=project.org_id,
+                project_id=project.id,
+                run_id=run.id,
+                item_id=item.id,
+                fingerprint=fps.get(item.id),
+            )
+        )
     audit(
         db,
         "assessment.started",
@@ -194,6 +274,57 @@ def start_run(
         run_id=run.id,
         items=len(plan),
         web_search=run.web_search,
+    )
+    db.commit()
+    enqueuer.run(run.id)
+    db.refresh(run)
+    return run
+
+
+def _failed_items(db: Session, run: AssessmentRun, plan) -> list:
+    rows = _latest_rows(db, run)
+    return [i for i in plan if (r := rows.get(i.id)) is not None and r.status == ItemStatus.failed]
+
+
+def resume_run(
+    db: Session, enqueuer: AssessmentEnqueuer, principal: Principal, project: Project
+) -> AssessmentRun:
+    """Довыполнение прогона: новые версии только для пунктов с ошибкой (нет средств, сбой сети, бюджет);
+    готовые пункты и их источники остаются — за них не платим повторно."""
+    if not principal.can_manage:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Довыполнять оценку может руководитель проекта")
+    db.scalar(select(Project.id).where(Project.id == project.id).with_for_update())
+    run = latest_run(db, project)
+    if run is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Оценка ещё не запускалась")
+    if _is_active(db, run):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Оценка уже выполняется")
+    plan = _plan(project)
+    failed = _failed_items(db, run, plan)
+    if not failed:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Пунктов с ошибкой нет")
+    rows = _latest_rows(db, run)
+    fps = fingerprints(plan, _doc_refs(db, project), run.passport_json, run.web_search)
+    for item in failed:
+        db.add(
+            SectionResult(
+                org_id=project.org_id,
+                project_id=project.id,
+                run_id=run.id,
+                item_id=item.id,
+                version=rows[item.id].version + 1,
+                fingerprint=fps.get(item.id),
+            )
+        )
+    run.status, run.error, run.finished_at = RunStatus.running, None, None
+    audit(
+        db,
+        "assessment.resumed",
+        org_id=project.org_id,
+        user_id=principal.user_id,
+        project_id=project.id,
+        run_id=run.id,
+        items=len(failed),
     )
     db.commit()
     enqueuer.run(run.id)
@@ -317,6 +448,7 @@ def _item_out(row: SectionResult, titles: dict) -> ItemOut:
         instruction=row.instruction,
         started_at=row.started_at,
         finished_at=row.finished_at,
+        reused=row.reused_from_id is not None,
     )
 
 

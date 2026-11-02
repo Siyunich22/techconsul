@@ -125,6 +125,7 @@ class ItemOut(BaseModel):
     instruction: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    reused: bool = False  # взят из прошлого прогона (входные данные не изменились)
 
 
 class ItemDetailOut(ItemOut):
@@ -154,6 +155,13 @@ class AssessmentOut(BaseModel):
 class EstimateOut(BaseModel):
     items_ai: int
     items_info: int
+    items_reused: int = 0  # входные данные не изменились — возьмутся из прошлого прогона без ИИ
+    items_strong: int = 0  # пункты на сильной модели (выводы)
+    budget_usd: Decimal | None = None  # остановка прогона при достижении расходов
+    # довыполнение: пункты последнего прогона с ошибкой (готовые сохраняются)
+    resume_items: int = 0
+    resume_cost_usd_min: Decimal = Decimal(0)
+    resume_cost_usd_max: Decimal = Decimal(0)
     cost_usd_min: Decimal
     cost_usd_max: Decimal
     minutes: int

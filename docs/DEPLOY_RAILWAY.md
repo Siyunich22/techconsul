@@ -61,6 +61,8 @@
 | `FASTEMBED_CACHE_PATH` | `/models` |
 
 Только `api`: `PORT=8000`.
+Модели и расходы (необязательно, есть значения по умолчанию): `LLM_MODEL_ITEMS` (обычные пункты, Sonnet), `ANALYSIS_STRONG_KINDS` (виды пунктов на `LLM_MODEL_ANALYSIS`), `ANALYSIS_RUN_BUDGET_USD` (остановка прогона, 30; 0 — без лимита).
+
 Только `worker`: `WORKER_CONCURRENCY=2` — разбор документов (больше — больше RAM); `LLM_CONCURRENCY=2` — одновременных извлечений паспорта / прогонов оценки (по умолчанию 2).
 `worker-index`: `INDEX_CONCURRENCY=3` — потоки (одна индексация + поисковые запросы).
 Процессы в контейнерах работают от пользователя `app` (entrypoint образа сбрасывает права после `chown` тома `/models`).

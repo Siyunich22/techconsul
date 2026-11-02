@@ -29,6 +29,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.pipeline.classify import classify
+from app.pipeline.digest import make_digest
 from app.pipeline.embedder import get_embedder
 from app.pipeline.index import chunk_pages
 from app.pipeline.ingest import is_supported, mime_for, parse_file
@@ -66,7 +67,7 @@ def ingest_document(
     doc = db.get(Document, doc_id)
     if doc is None or doc.deleted_at is not None:
         return
-    doc.status, doc.error = DocumentStatus.processing, None
+    doc.status, doc.error, doc.digest_json = DocumentStatus.processing, None, None
     # отметка начала: документ, оставшийся в «processing» после гибели воркера, можно переобработать
     doc.meta_json = {**(doc.meta_json or {}), "ingest_started_at": _now().isoformat()}
     db.commit()
@@ -100,6 +101,12 @@ def ingest_document(
             log.exception("Документ %s: классификация не выполнена", doc_id)
             db.rollback()
             doc = db.get(Document, doc_id)
+    try:  # выжимка для агентов оценки; без неё всё работает (ensure_digests повторит при запуске оценки)
+        doc.digest_json = make_digest(doc, [(p.no, p.sheet, p.text) for p in parsed.pages])
+    except Exception:
+        log.exception("Документ %s: выжимка не построена", doc_id)
+        db.rollback()
+        doc = db.get(Document, doc_id)
     doc.status = DocumentStatus.recognized
     db.commit()
     enqueue_index(doc.id)

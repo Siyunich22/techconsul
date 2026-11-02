@@ -335,6 +335,7 @@ export interface AssessmentItem {
   instruction: string;
   started_at: string | null;
   finished_at: string | null;
+  reused: boolean;
 }
 
 export interface Assessment {
@@ -345,6 +346,12 @@ export interface Assessment {
 export interface AssessmentEstimate {
   items_ai: number;
   items_info: number;
+  items_reused: number;
+  items_strong: number;
+  budget_usd: string | null;
+  resume_items: number;
+  resume_cost_usd_min: string;
+  resume_cost_usd_max: string;
   cost_usd_min: string;
   cost_usd_max: string;
   minutes: number;

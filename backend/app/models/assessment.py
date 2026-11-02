@@ -85,6 +85,11 @@ class SectionResult(UUIDPk, Timestamps, Base):
     instruction: Mapped[str] = mapped_column(Text, default="")  # доп. указание эксперта при пересборке
     error: Mapped[str | None] = mapped_column(Text)
     validator_warnings_json: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    # отпечаток входных данных пункта: совпал с прошлым прогоном — результат берётся оттуда без ИИ
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+    reused_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("section_results.id", ondelete="SET NULL")
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

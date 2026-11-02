@@ -43,6 +43,13 @@ def start_run(project_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession,
     return svc.run_out(db, svc.start_run(db, enqueuer, principal, project))
 
 
+@router.post("/assessment/resume", response_model=RunOut, status_code=status.HTTP_202_ACCEPTED)
+def resume(project_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession, enqueuer: EnqueuerDep):
+    """Довыполнить пункты последнего прогона, завершившиеся ошибкой."""
+    project = get_project(db, principal, project_id)
+    return svc.run_out(db, svc.resume_run(db, enqueuer, principal, project))
+
+
 @router.get("/runs/{run_id}/events")
 async def run_events(
     project_id: uuid.UUID,

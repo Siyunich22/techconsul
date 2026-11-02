@@ -5,6 +5,7 @@
 правила 2 и сверку ссылок на источники с реестром прогона.
 """
 
+import json
 import logging
 import re
 import uuid
@@ -13,14 +14,15 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app.assessment.tools import SourceEntry, SourceRegistry, ToolContext, build_tools
+from app.assessment.tools import SourceEntry, SourceRegistry, ToolContext, build_tools, passport_text
 from app.core.config import get_settings
-from app.llm.client import LLM, CallContext, LLMError, get_llm
+from app.llm.client import BILLING_MESSAGE, LLM, CallContext, LLMBillingError, LLMError, ModelRole, get_llm
 from app.llm.prompts import render
 from app.models import (
     AssessmentRun,
@@ -37,6 +39,7 @@ from app.models import (
     SectionResult,
     Source,
 )
+from app.pipeline.digest import ensure_digests
 from app.schemas.assessment import SOURCE_REF, Finding, Gap, ResultTable, SectionPayload, SourceRef
 from app.template_engine.loader import document_categories, parse_template
 from app.template_engine.tree import TreeNode, build_tree
@@ -87,6 +90,11 @@ def plan_items(template: dict, enabled_optional: list[str]) -> list[PlanItem]:
     ]
 
 
+def model_role(item: PlanItem) -> ModelRole:
+    """Модель пункта по виду из шаблона: выводы разделов — сильная модель, остальное — пункты (Sonnet)."""
+    return "analysis" if item.kind in get_settings().analysis_strong_kinds else "items"
+
+
 # --- выполнение одного пункта ---
 
 
@@ -112,6 +120,8 @@ class ItemContext:
     registry: SourceRegistry
     tools: ToolContext
     llm: LLM
+    context: str = ""  # общий контекст прогона (паспорт, обзор документов) — кэшируемая часть промпта
+    shared: frozenset[str] = frozenset()  # метки источников из общего контекста
 
 
 @dataclass
@@ -120,6 +130,7 @@ class ItemOutcome:
     author: ResultAuthor = ResultAuthor.ai
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    billing: bool = False  # нет средств на балансе API — дальнейшие платные пункты не запускаем
 
 
 def _now() -> datetime:
@@ -205,8 +216,9 @@ def run_agent(ctx: ItemContext) -> ItemOutcome:
             project_id=ctx.info.project_id,
             run_id=ctx.info.run_id,
         ),
-        role="analysis",
-        system=render("assess_system"),
+        role=model_role(ctx.item),
+        # системная часть одинакова у всех пунктов прогона (для одной модели) — кэш Anthropic
+        system=render("assess_system") + (f"\n\n{ctx.context}" if ctx.context else ""),
         user=_user_prompt(ctx),
         tools=tools,
         server_tools=server_tools(ctx.item, ctx.info.web_search),
@@ -214,7 +226,7 @@ def run_agent(ctx: ItemContext) -> ItemOutcome:
         max_turns=s.analysis_max_tool_turns,
         max_tokens=s.analysis_max_tokens,
     )
-    allowed = set(ctx.tools.seen)
+    allowed = set(ctx.tools.seen) | set(ctx.shared)
     for dep in ctx.deps.values():
         if dep is not None:
             allowed |= {s.id for s in dep.sources} | {x for f in dep.findings for x in f.source_ids}
@@ -534,6 +546,8 @@ def execute(ctx: ItemContext, db_factory: DbFactory) -> ItemOutcome:
             with _session(db_factory) as db:
                 return ItemOutcome(info_item(db, ctx.info, ctx.item, ctx.registry), ResultAuthor.system)
         return run_agent(ctx)
+    except LLMBillingError as exc:
+        return ItemOutcome(None, error=str(exc), billing=True)
     except LLMError as exc:
         log.warning("Пункт %s не выполнен: %s", ctx.item.id, exc)
         return ItemOutcome(None, error=str(exc)[:2000])
@@ -598,6 +612,139 @@ def run_items(
             return
 
 
+CONTEXT_DOCS_MAX_CHARS = 60_000
+
+
+def project_context(db: Session, project: Project, tool_ctx: ToolContext, categories: dict[str, str]) -> str:
+    """Паспорт (с S-метками — на них можно ссылаться) и обзор документов по выжимкам (навигация)."""
+    passport = passport_text(tool_ctx, None)
+    docs = db.scalars(
+        select(Document)
+        .where(
+            Document.project_id == project.id,
+            Document.org_id == project.org_id,
+            Document.deleted_at.is_(None),
+            Document.status.in_((DocumentStatus.recognized, DocumentStatus.indexed)),
+        )
+        .order_by(Document.category, Document.filename)
+    ).all()
+    blocks, size = [], 0
+    for d in docs:
+        lines = [f"### «{d.filename}» — {categories.get(d.category or '', d.category or 'без категории')}"]
+        digest = d.digest_json or {}
+        if digest:
+            lines.append(digest.get("summary", ""))
+            sections = "; ".join(f"{x['title']} ({x['pages']})" for x in digest.get("sections", []))
+            if sections:
+                lines.append(f"Разделы: {sections}")
+            facts = "; ".join(
+                x["fact"] + (f" (стр. {x['page']})" if x.get("page") else "")
+                for x in digest.get("key_facts", [])
+            )
+            if facts:
+                lines.append(f"Ключевые факты: {facts}")
+        else:
+            lines.append("Выжимки нет — используй поиск по документу.")
+        block = "\n".join(lines)
+        if size + len(block) > CONTEXT_DOCS_MAX_CHARS:
+            blocks.append(f"…и ещё документов: {len(docs) - len(blocks)} (ищи через search_project_docs)")
+            break
+        blocks.append(block)
+        size += len(block)
+    return render(
+        "assess_context", passport=passport, documents="\n\n".join(blocks) or "Документы не загружены."
+    )
+
+
+_SID = re.compile(r'(?<=[\["])S\d+(?=[\]"])')  # метка в тексте «[S12]» и в полях «"S12"»
+
+
+def _reuse_candidate(db: Session, row: SectionResult) -> SectionResult | None:
+    """Результат пункта с тем же отпечатком из прошлого прогона проекта — последняя версия пункта там."""
+    candidates = db.scalars(
+        select(SectionResult)
+        .where(
+            SectionResult.org_id == row.org_id,
+            SectionResult.project_id == row.project_id,
+            SectionResult.item_id == row.item_id,
+            SectionResult.fingerprint == row.fingerprint,
+            SectionResult.status == ItemStatus.done,
+            SectionResult.run_id != row.run_id,
+            SectionResult.payload_json.is_not(None),
+        )
+        .order_by(SectionResult.created_at.desc())
+    ).all()
+    for cand in candidates:
+        newer = db.scalar(
+            select(func.count())
+            .select_from(SectionResult)
+            .where(
+                SectionResult.run_id == cand.run_id,
+                SectionResult.item_id == cand.item_id,
+                SectionResult.version > cand.version,
+            )
+        )
+        if not newer:
+            return cand
+    return None
+
+
+def _carry_over(db: Session, cand: SectionResult, registry: SourceRegistry) -> SectionPayload | None:
+    """Результат прошлого прогона с метками источников, переведёнными в реестр текущего прогона.
+    None — источник не найден или документ удалён (тогда пункт считается заново)."""
+    text = json.dumps(cand.payload_json, ensure_ascii=False)
+    sids = set(_SID.findall(text))
+    old = {
+        s.sid: s for s in db.scalars(select(Source).where(Source.run_id == cand.run_id, Source.sid.in_(sids)))
+    }
+    if set(old) != sids:
+        return None
+    doc_ids = {s.document_id for s in old.values() if s.document_id}
+    alive = set(
+        db.scalars(
+            select(Document.id).where(
+                Document.id.in_(doc_ids), Document.org_id == cand.org_id, Document.deleted_at.is_(None)
+            )
+        )
+    )
+    if alive != doc_ids:
+        return None
+    mapping = {
+        sid: registry.add(
+            SourceEntry(
+                "",
+                s.type,
+                s.title,
+                s.document_id,
+                s.page,
+                s.sheet,
+                s.cell_range,
+                s.reference_doc_id,
+                s.url,
+                s.accessed_at,
+            )
+        )
+        for sid, s in old.items()
+    }
+    try:
+        payload = SectionPayload.model_validate(json.loads(_SID.sub(lambda m: mapping[m.group(0)], text)))
+        payload.check_citations()
+    except (ValidationError, ValueError):
+        return None
+    return payload
+
+
+def _fail_pending(db_factory: DbFactory, run_id: uuid.UUID, error: str) -> None:
+    with _session(db_factory) as db:
+        for r in _latest(db, run_id).values():
+            if r.status == ItemStatus.pending:
+                r.status, r.error, r.finished_at = ItemStatus.failed, error, _now()
+        run = db.get(AssessmentRun, run_id)
+        if run is not None:
+            run.error = error
+        db.commit()
+
+
 def _drain(
     db_factory: DbFactory,
     run_id: uuid.UUID,
@@ -655,9 +802,17 @@ def _drain(
         info = RunInfo(
             run.id, run.org_id, project.id, run.web_search, project.name, project.industry, project.region
         )
+        reused = {i for i, r in latest.items() if r.reused_from_id is not None}
+        # выжимки документов (один раз на документ) и общий контекст: паспорт с метками + обзор документов
+        if any(not plan[i].is_info for i in todo):
+            ensure_digests(db, project.org_id, project.id, llm)
+        context = project_context(db, project, tool_ctx, tool_ctx.categories)
+        shared = frozenset(tool_ctx.seen)
 
     remaining = list(todo)
     in_flight: set[str] = set()
+    state: dict[str, str | None] = {"stop": None}  # superseded | budget
+    budget = s.analysis_run_budget_usd
 
     def ready(item_id: str) -> bool:
         return all(d in done or (d not in remaining and d not in in_flight) for d in plan[item_id].depends_on)
@@ -667,6 +822,13 @@ def _drain(
         with _session(db_factory) as db:
             run = db.get(AssessmentRun, run_id)
             if run is None or run.status != RunStatus.running:
+                state["stop"] = "superseded"
+                return None
+            paid = not plan[item_id].is_info
+            if paid and state["stop"] == "billing":
+                return None
+            if budget > 0 and paid and Decimal(run_cost(db, run_id)) >= Decimal(str(budget)):
+                state["stop"] = "budget"
                 return None
             row = _latest(db, run_id)[item_id]
             row.status, row.started_at = ItemStatus.running, _now()
@@ -681,12 +843,15 @@ def _drain(
             registry=registry,
             tools=replace(tool_ctx, seen=set()),
             llm=llm,
+            context=context,
+            shared=shared,
         )
 
-    def save(item_id: str, outcome: ItemOutcome) -> None:
+    def save(item_id: str, outcome: ItemOutcome, reused_from: uuid.UUID | None = None) -> None:
         with _session(db_factory) as db:
             row = _latest(db, run_id)[item_id]
             row.finished_at = _now()
+            row.reused_from_id = reused_from
             if outcome.payload is not None:
                 row.status, row.payload_json = ItemStatus.done, outcome.payload.model_dump(mode="json")
                 row.author, row.error = outcome.author, None
@@ -696,46 +861,91 @@ def _drain(
             _persist_sources(db, db.get(AssessmentRun, run_id), registry)
             db.commit()
         done[item_id] = outcome.payload
+        if outcome.billing:
+            state["stop"] = "billing"
+
+    def reuse(item_id: str) -> bool:
+        """Входные данные не изменились (отпечаток) и зависимости тоже взяты из прошлого прогона —
+        результат переносится без обращения к ИИ."""
+        item = plan[item_id]
+        if item.is_info or not all(d in reused or plan[d].is_info for d in item.depends_on):
+            return False
+        with _session(db_factory) as db:
+            row = _latest(db, run_id)[item_id]
+            if row.version != 1 or row.instruction or not row.fingerprint:
+                return False  # пересборка по указанию эксперта — всегда заново
+            cand = _reuse_candidate(db, row)
+            payload = _carry_over(db, cand, registry) if cand is not None else None
+            if payload is None:
+                return False
+            when = (cand.finished_at or cand.created_at).strftime("%d.%m.%Y")
+            warnings = [
+                *(cand.validator_warnings_json or []),
+                f"Входные данные не изменились — результат взят из прогона от {when} без обращения к ИИ",
+            ]
+            cand_id = cand.id
+        save(item_id, ItemOutcome(payload, ResultAuthor.ai, warnings), reused_from=cand_id)
+        reused.add(item_id)
+        return True
 
     try:
         if concurrency <= 1:
             while remaining:
                 item_id = next((i for i in remaining if ready(i)), remaining[0])  # цикл зависимостей
                 remaining.remove(item_id)
+                if reuse(item_id):
+                    continue
                 ctx = start(item_id)
                 if ctx is None:
-                    return
+                    if state["stop"] in ("budget", "billing"):
+                        continue  # платный пункт пропущен; бесплатные (информационные) — дальше
+                    break
                 save(item_id, execute(ctx, db_factory))
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as pool:
                 running: dict[Future, str] = {}
-                stopped = False
-                while (remaining and not stopped) or running:
+                while (remaining and state["stop"] != "superseded") or running:
                     free = concurrency - len(running)
-                    batch = [] if stopped else [i for i in remaining if ready(i)][:free]
-                    if not stopped and not running and remaining and not batch:
+                    halted = state["stop"] == "superseded"
+                    batch = [] if halted else [i for i in remaining if ready(i)][:free]
+                    if not halted and not running and remaining and not batch:
                         batch = [remaining[0]]  # цикл зависимостей — запускаем по порядку
+                    progressed = False
                     for item_id in batch:
                         remaining.remove(item_id)
+                        if reuse(item_id):
+                            progressed = True
+                            continue
                         ctx = start(item_id)
                         if ctx is None:
-                            stopped = True
+                            if state["stop"] in (
+                                "budget",
+                                "billing",
+                            ):  # платные — пропуск, бесплатные — дальше
+                                remaining[:] = [i for i in remaining if plan[i].is_info]
+                                progressed = True
                             break
                         in_flight.add(item_id)
                         running[pool.submit(execute, ctx, db_factory)] = item_id
                     if not running:
+                        if progressed and remaining and state["stop"] != "superseded":
+                            continue
                         break
                     finished, _ = wait(running, return_when=FIRST_COMPLETED)
                     for future in finished:
                         item_id = running.pop(future)
                         save(item_id, future.result())
                         in_flight.discard(item_id)
-                if stopped:
-                    return
     except BaseException as exc:  # сбой оркестратора (БД, лимит времени): не оставляем «running» навсегда
         log.exception("Прогон %s прерван", run_id)
         _abort(db_factory, run_id, f"{type(exc).__name__}: {exc}"[:2000])
         raise
+    if state["stop"] == "superseded":
+        return
+    if state["stop"] == "budget":
+        _fail_pending(db_factory, run_id, f"Бюджет прогона исчерпан ({budget:g} $) — пункт не выполнялся")
+    elif state["stop"] == "billing":
+        _fail_pending(db_factory, run_id, BILLING_MESSAGE)
     _finish(db_factory, run_id)
 
 

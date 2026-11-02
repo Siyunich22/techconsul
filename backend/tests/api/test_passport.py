@@ -88,7 +88,11 @@ def test_extract_passport_with_sources_and_discrepancies(two_docs, llm, db):
     assert r.status_code == 202, r.text
     passport = c.get(base).json()
     assert passport["status"] == "draft", passport
-    assert [x["schema"] for x in llm.calls] == ["PassportData", "PassportData", "ReducedPassport"]
+    assert [x["schema"] for x in llm.calls if x["purpose"].startswith("passport")] == [
+        "PassportData",
+        "PassportData",
+        "ReducedPassport",
+    ]
 
     tech = passport["data"]["technology"]
     assert tech["capacity"]["value"] == "320" and tech["capacity"]["refs"] == [labels[TEO]]
@@ -113,7 +117,7 @@ def test_single_batch_skips_reduce(project, llm, monkeypatch):
     c.post(f"/api/v1/projects/{p['id']}/passport/extract")
     passport = c.get(f"/api/v1/projects/{p['id']}/passport").json()
     assert passport["status"] == "draft"
-    assert [x["schema"] for x in llm.calls] == ["PassportData"]
+    assert [x["schema"] for x in llm.calls if x["purpose"].startswith("passport")] == ["PassportData"]
     assert passport["data"]["technology"]["capacity"]["value"] == "300"
     assert passport["discrepancies"] == []
 

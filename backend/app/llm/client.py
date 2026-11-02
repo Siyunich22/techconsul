@@ -26,7 +26,7 @@ from app.models import LlmCall
 
 log = logging.getLogger(__name__)
 
-ModelRole = Literal["analysis", "extract", "cheap"]
+ModelRole = Literal["analysis", "items", "extract", "cheap"]
 WEB_SEARCH_USD = Decimal("0.01")  # серверный web search: $10 за 1000 запросов, сверх токенов
 STREAM_RETRY_DELAYS_S = (5, 20)  # обрыв потока (overloaded посреди ответа) — SDK такой не повторяет
 
@@ -37,6 +37,16 @@ class LLMError(Exception):
 
 class LLMUnavailable(LLMError):
     """Ключ API не задан или сервис недоступен — вызывающий код использует запасной путь."""
+
+
+class LLMBillingError(LLMUnavailable):
+    """На балансе Anthropic нет средств: следующие вызовы тоже не пройдут — прогон останавливается."""
+
+
+BILLING_MESSAGE = (
+    "Недостаточно средств на балансе Anthropic — пополните баланс (console.anthropic.com → Billing) "
+    "и довыполните пункты"
+)
 
 
 class LLMRefusal(LLMError):
@@ -98,9 +108,12 @@ class LLM(Protocol):
 
 def model_for(role: ModelRole) -> str:
     s = get_settings()
-    return {"analysis": s.llm_model_analysis, "extract": s.llm_model_extract, "cheap": s.llm_model_cheap}[
-        role
-    ]
+    return {
+        "analysis": s.llm_model_analysis,
+        "items": s.llm_model_items,
+        "extract": s.llm_model_extract,
+        "cheap": s.llm_model_cheap,
+    }[role]
 
 
 class AnthropicLLM:
@@ -266,6 +279,8 @@ class AnthropicLLM:
                 if _transient(exc) and attempt < len(STREAM_RETRY_DELAYS_S):
                     time.sleep(STREAM_RETRY_DELAYS_S[attempt])
                     continue
+                if "credit balance" in str(exc.message).lower():
+                    raise LLMBillingError(BILLING_MESSAGE) from exc
                 if exc.status_code >= 500 or exc.status_code in (401, 403, 429) or _transient(exc):
                     raise LLMUnavailable(str(exc)) from exc
                 raise LLMError(str(exc)) from exc

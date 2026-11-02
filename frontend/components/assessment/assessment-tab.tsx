@@ -103,7 +103,8 @@ export function AssessmentTab({
   const queryClient = useQueryClient();
   const assessment = useAssessment(projectId);
   const [confirming, setConfirming] = useState(false);
-  const estimate = useAssessmentEstimate(projectId, confirming);
+  const [resuming, setResuming] = useState(false);
+  const estimate = useAssessmentEstimate(projectId, confirming || resuming);
   const [selected, setSelected] = useState<string | null>(null);
   useRunEvents(projectId, assessment.data?.run);
 
@@ -111,6 +112,16 @@ export function AssessmentTab({
     mutationFn: () => api.post<AssessmentRun>(`/projects/${projectId}/runs`),
     onSuccess: () => {
       setConfirming(false);
+      queryClient.invalidateQueries({ queryKey: ["assessment", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    },
+  });
+
+  const resume = useMutation({
+    mutationFn: () =>
+      api.post<AssessmentRun>(`/projects/${projectId}/assessment/resume`),
+    onSuccess: () => {
+      setResuming(false);
       queryClient.invalidateQueries({ queryKey: ["assessment", projectId] });
       queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     },
@@ -166,15 +177,65 @@ export function AssessmentTab({
                 </p>
               )}
             </div>
-            {canRun && !active && !confirming && (
-              <Button
-                variant={run ? "outline" : "default"}
-                onClick={() => setConfirming(true)}
-              >
-                <Play /> {run ? t("restart") : t("start")}
-              </Button>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {canRun &&
+                !active &&
+                !confirming &&
+                !resuming &&
+                run &&
+                run.items_failed > 0 && (
+                  <Button
+                    onClick={() => setResuming(true)}
+                    data-testid="resume"
+                  >
+                    <Play /> {t("resume", { n: run.items_failed })}
+                  </Button>
+                )}
+              {canRun && !active && !confirming && !resuming && (
+                <Button
+                  variant={run ? "outline" : "default"}
+                  onClick={() => setConfirming(true)}
+                >
+                  <Play /> {run ? t("restart") : t("start")}
+                </Button>
+              )}
+            </div>
           </div>
+          {resuming && (
+            <div
+              className="flex flex-col gap-3 rounded-md border p-4"
+              data-testid="resume-confirm"
+            >
+              <p className="font-medium">{t("resumeTitle")}</p>
+              {estimate.data ? (
+                <p className="text-sm">
+                  {t("resumeText", {
+                    n: estimate.data.resume_items,
+                    min: Number(estimate.data.resume_cost_usd_min).toFixed(0),
+                    max: Number(estimate.data.resume_cost_usd_max).toFixed(0),
+                  })}
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground">…</p>
+              )}
+              {resume.error && (
+                <Alert variant="destructive">
+                  {errorMessage(resume.error)}
+                </Alert>
+              )}
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => resume.mutate()}
+                  disabled={resume.isPending}
+                >
+                  {t("resumeConfirm")}
+                </Button>
+                <Button variant="outline" onClick={() => setResuming(false)}>
+                  {t("cancel")}
+                </Button>
+              </div>
+            </div>
+          )}
           {!run && !confirming && (
             <p className="text-sm text-muted-foreground">{t("intro")}</p>
           )}
@@ -224,6 +285,15 @@ export function AssessmentTab({
                           className="shrink-0"
                         >
                           {t(`disclosure.${item.disclosure_status}`)}
+                        </Badge>
+                      )}
+                      {item.reused && (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0"
+                          title={t("reusedHint")}
+                        >
+                          {t("reused")}
                         </Badge>
                       )}
                     </button>
@@ -317,12 +387,29 @@ function ConfirmRun({
             info: estimate.items_info,
           })}
         </li>
+        {estimate.items_reused > 0 && (
+          <li>{t("confirmReused", { n: estimate.items_reused })}</li>
+        )}
+        <li>
+          {t("confirmModels", {
+            strong: estimate.items_strong,
+            regular:
+              estimate.items_ai - estimate.items_reused - estimate.items_strong,
+          })}
+        </li>
         <li>
           {t("confirmCost", {
             min: Number(estimate.cost_usd_min).toFixed(0),
             max: Number(estimate.cost_usd_max).toFixed(0),
           })}
         </li>
+        {estimate.budget_usd && (
+          <li>
+            {t("confirmBudget", {
+              budget: Number(estimate.budget_usd).toFixed(0),
+            })}
+          </li>
+        )}
         <li>{t("confirmTime", { minutes: estimate.minutes })}</li>
         <li>
           {t("confirmWeb", { state: estimate.web_search ? t("on") : t("off") })}
@@ -466,6 +553,11 @@ function ItemPanel({
           <Badge variant="muted">
             {item.kind === "info" ? t("fromProject") : t("aiDraft")}
           </Badge>
+          {item.reused && (
+            <Badge variant="outline" title={t("reusedHint")}>
+              {t("reused")}
+            </Badge>
+          )}
           {item.version > 1 && (
             <Badge variant="outline">{t("version", { n: item.version })}</Badge>
           )}

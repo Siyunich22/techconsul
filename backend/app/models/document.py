@@ -92,6 +92,8 @@ class Document(UUIDPk, Base):
     )
     error: Mapped[str | None] = mapped_column(Text)
     meta_json: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    # выжимка документа (дешёвая модель, один раз): навигация агентов оценки без повторного поиска
+    digest_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     ocr_pages: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     llm_model_analysis: str = "claude-opus-5-5"
     llm_model_extract: str = "claude-sonnet-5-5"
     llm_model_cheap: str = "claude-haiku-4-5-20251001"
+    # пункты оценки: обычные (анализ по документам, замечания) — эта модель; виды пунктов из
+    # analysis_strong_kinds (выводы разделов) — llm_model_analysis. Sonnet вдвое дешевле Opus.
+    llm_model_items: str = "claude-sonnet-5-5"
+    analysis_strong_kinds: list[str] = ["conclusion"]
 
     # паспорт проекта (TZ §5.2): map по пакетам страниц → reduce
     passport_batch_chars: int = 60_000  # ≈ 19k токенов текста на один вызов map
@@ -101,6 +105,9 @@ class Settings(BaseSettings):
     analysis_web_fetch_max_uses: int = 3
     analysis_web_fetch_max_content_tokens: int = 20_000  # страница целиком повторно оплачивается каждым ходом
     analysis_stale_after_min: int = 180  # прогон «идёт» дольше — считаем, что воркер упал
+    # бюджет прогона: расходы на ИИ достигли суммы — оставшиеся пункты не запускаются (0 — без лимита)
+    analysis_run_budget_usd: float = 30.0
+    digest_max_chars: int = 40_000  # текст документа для выжимки (начало документа с метками страниц)
 
     # лимиты частоты входа/регистрации (Redis); в dev-стеке выключены — e2e регистрирует десятки организаций
     rate_limits_enabled: bool = True
