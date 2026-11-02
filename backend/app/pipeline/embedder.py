@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import re
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
@@ -75,8 +76,17 @@ class HashEmbedder:
         return self._vec(text)
 
 
-@lru_cache
+_load_lock = threading.Lock()
+
+
 def get_embedder() -> Embedder:
+    """Модель одна на процесс; worker-index работает потоками — загрузка под блокировкой (не дважды)."""
+    with _load_lock:
+        return _load_embedder()
+
+
+@lru_cache
+def _load_embedder() -> Embedder:
     s = get_settings()
     if s.embedder == "hash":
         return HashEmbedder(s.embedding_dim)
@@ -84,7 +94,7 @@ def get_embedder() -> Embedder:
 
 
 def embed_query(text: str) -> list[float]:
-    """Эмбеддинг поискового запроса. В режиме worker считает worker-index (очередь index):
+    """Эмбеддинг поискового запроса. В режиме worker считает worker-index (очередь query):
     модель (~2 ГБ) живёт только в нём, API остаётся лёгким и не скачивает модель при деплое."""
     s = get_settings()
     if s.embedder == "hash" or s.query_embedding_mode == "local":

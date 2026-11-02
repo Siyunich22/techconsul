@@ -67,9 +67,18 @@ class MemoryRateLimiter:
         self._hits.pop(key, None)
 
 
+class NoRateLimiter:
+    def hit(self, key: str, limit: int, window_s: int) -> bool:
+        return True
+
+    def reset(self, key: str) -> None:
+        pass
+
+
 @lru_cache
 def get_rate_limiter() -> RateLimiter:
-    return RedisRateLimiter(get_settings().redis_url)
+    s = get_settings()
+    return RedisRateLimiter(s.redis_url) if s.rate_limits_enabled else NoRateLimiter()
 
 
 def enforce(limiter: RateLimiter, key: str, limit: int, window_s: int) -> None:

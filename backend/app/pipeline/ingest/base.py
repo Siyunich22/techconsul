@@ -64,3 +64,18 @@ def clean_text(text: str) -> str:
         if line or (out and out[-1]):
             out.append(line)
     return "\n".join(out).strip()
+
+
+MAX_TEXT_BYTES = 50 * 1024**2  # текст/CSV: дальше — не читаем (файл в 500 МБ занял бы гигабайты памяти)
+
+
+def read_text_prefix(path: Path) -> tuple[bytes, bool]:
+    """Начало текстового файла до MAX_TEXT_BYTES по границе строки; второй элемент — файл обрезан."""
+    with open(path, "rb") as f:
+        raw = f.read(MAX_TEXT_BYTES + 1)
+    if len(raw) <= MAX_TEXT_BYTES:
+        return raw, False
+    return raw[: raw.rfind(b"\n", 0, MAX_TEXT_BYTES) + 1 or MAX_TEXT_BYTES], True
+
+
+TRUNCATED_WARNING = f"Файл больше {MAX_TEXT_BYTES // 1024**2} МБ — обработано только начало"

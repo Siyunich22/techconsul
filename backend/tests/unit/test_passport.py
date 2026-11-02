@@ -83,3 +83,40 @@ def test_merge_partials_fallback():
     assert merged.technology.capacity.value == "320"
     assert [r.name for r in merged.equipment.items] == ["Сепаратор", "Энтолейтор"]
     assert is_empty(PassportData()) and not is_empty(merged)
+
+
+def test_reextraction_keeps_expert_edits():
+    """Правило 3: ручные поля и строки эксперта переживают повторное извлечение, метки — пересчитаны."""
+    from app.pipeline.passport import ExtractionResult, keep_expert_edits
+
+    doc = str(uuid.uuid4())
+    teo_p3 = {"document_id": doc, "filename": "ТЭО.pdf", "category": "тэо_bfs", "page": 3, "sheet": None}
+    teo_p9 = {**teo_p3, "page": 9}
+    old = PassportData.model_validate(
+        {
+            "technology": {"capacity": {"value": "300", "unit": "т/сут", "refs": ["P2"], "manual": True}},
+            "equipment": {"items": [{"name": "Сепаратор", "refs": ["P5"], "manual": True}]},
+        }
+    ).model_dump(mode="json")
+    old_sources = {"P2": teo_p3, "P5": teo_p9}
+    old_disc = [{"field": "technology.capacity", "title": "t", "description": "d", "resolution": "Верно 300"}]
+    new = ExtractionResult(
+        data=PassportData.model_validate(
+            {
+                "technology": {"capacity": {"value": "320", "unit": "т/сут", "refs": ["P1"]}},
+                "equipment": {"items": [{"name": "Мельница", "refs": ["P1"]}]},
+            }
+        ),
+        discrepancies=[Discrepancy(field="technology.capacity", title="t", description="d")],
+        sources={"P1": teo_p3},
+    )
+    merged, kept = keep_expert_edits(new, old, old_sources, old_disc)
+    assert kept == 2
+    cap = merged.data.technology.capacity
+    assert cap.value == "300" and cap.manual and cap.refs == ["P1"]  # та же страница — новая метка P1
+    names = [r.name for r in merged.data.equipment.items]
+    assert names == ["Мельница", "Сепаратор"]
+    added = merged.data.equipment.items[1].refs[0]
+    assert merged.sources[added]["page"] == 9  # источника не было в новом извлечении — добавлен
+    assert merged.discrepancies[0].resolution == "Верно 300"
+    assert any("правки эксперта" in w for w in merged.warnings)

@@ -1,5 +1,7 @@
+import json
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 
@@ -61,6 +63,40 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+_UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+class OriginCheck:
+    """CSRF: изменяющий запрос из браузера с чужого сайта отклоняется по заголовку Origin (его страница
+    подделать не может). Cookie SameSite=Lax не закрывают «соседние» поддомены и multipart-формы.
+    Свой origin — Host/X-Forwarded-Host (запрос через прокси Next.js) или PUBLIC_URL.
+    Запросы без Origin (не браузер, curl, тесты) пропускаются — у них нет чужих cookie."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+        self.public = urlsplit(get_settings().public_url).netloc.lower()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] in _UNSAFE:
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+            origin = headers.get("origin")
+            if origin is not None:
+                allowed = {self.public, headers.get("host", "").lower()}
+                allowed |= {h.strip().lower() for h in headers.get("x-forwarded-host", "").split(",") if h}
+                if urlsplit(origin).netloc.lower() not in allowed - {""}:
+                    body = json.dumps({"detail": "Запрос с чужого сайта отклонён"}, ensure_ascii=False)
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 403,
+                            "headers": [(b"content-type", b"application/json; charset=utf-8")],
+                        }
+                    )
+                    await send({"type": "http.response.body", "body": body.encode()})
+                    return
+        await self.app(scope, receive, send)
+
+
 def create_app(*, register_default_template: bool = True) -> FastAPI:
     settings = get_settings()
     if settings.app_env != "dev" and not settings.cookie_secure:
@@ -69,6 +105,7 @@ def create_app(*, register_default_template: bool = True) -> FastAPI:
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.register_default_template = register_default_template
     app.add_middleware(SecurityHeaders)
+    app.add_middleware(OriginCheck)
     # /health — для docker healthcheck; /api/v1/health — для фронтенда через прокси.
     app.include_router(health.router)
     app.include_router(health.router, prefix=settings.api_prefix)

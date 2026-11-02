@@ -19,8 +19,8 @@
 | Сервис | Dockerfile path | Watch paths | Start command | Pre-deploy | Healthcheck |
 |---|---|---|---|---|---|
 | `api` | `backend/Dockerfile` | `/backend/**`, `/templates/**` | — (CMD образа) | `alembic upgrade head` | `/health`, 120 с |
-| `worker` | `backend/Dockerfile` | `/backend/**`, `/templates/**` | `sh -c 'celery -A workers.celery_app worker -Q ingest,default --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-2} -n ingest@%h'` | — | — |
-| `worker-index` | `backend/Dockerfile` | `/backend/**` | `celery -A workers.celery_app worker -Q index --loglevel=INFO --concurrency=1 -n index@%h` | — | — |
+| `worker` | `backend/Dockerfile` | `/backend/**`, `/templates/**` | `bash workers/start.sh worker` (ingest + llm) | — | — |
+| `worker-index` | `backend/Dockerfile` | `/backend/**` | `bash workers/start.sh index` (query + index, потоки) | — | — |
 | `web` | `Dockerfile` (от `/frontend`) | `/frontend/**` | — | — | `/login`, 120 с |
 
 ⚠ «Railpack could not determine how to build the app» в логе сборки — у сервиса не задан Dockerfile path, включился автосборщик.
@@ -61,7 +61,9 @@
 | `FASTEMBED_CACHE_PATH` | `/models` |
 
 Только `api`: `PORT=8000`.
-Только `worker`: `WORKER_CONCURRENCY=2` (больше — больше RAM).
+Только `worker`: `WORKER_CONCURRENCY=2` — разбор документов (больше — больше RAM); `LLM_CONCURRENCY=2` — одновременных извлечений паспорта / прогонов оценки (по умолчанию 2).
+`worker-index`: `INDEX_CONCURRENCY=3` — потоки (одна индексация + поисковые запросы).
+Процессы в контейнерах работают от пользователя `app` (entrypoint образа сбрасывает права после `chown` тома `/models`).
 
 `web`:
 
@@ -74,7 +76,8 @@
 
 браузер → `web` (`/api/*` прокси) → `api` → файл частями в S3 → задача в Redis →
 `worker` (разбор, OCR, LibreOffice, классификация) → `worker-index` (чанки, эмбеддинги → Postgres/pgvector) → статус «Проиндексирован».
-Поиск: `api` отправляет текст запроса в `worker-index` (очередь `index`) — модель держит только он, `api` остаётся лёгким.
+Поиск: `api` отправляет текст запроса в `worker-index` (очередь `query`) — модель держит только он, `api` остаётся лёгким.
+Паспорт и оценка — очередь `llm` (отдельный процесс в `worker`).
 
 ## Проверка после деплоя
 

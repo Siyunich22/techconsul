@@ -50,10 +50,11 @@ def require_reviewer(principal: Principal) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав")
 
 
-def get_passport(db: Session, project: Project) -> Passport | None:
-    return db.scalar(
-        select(Passport).where(Passport.project_id == project.id, Passport.org_id == project.org_id)
-    )
+def get_passport(db: Session, project: Project, *, lock: bool = False) -> Passport | None:
+    """lock — блокировка строки до конца транзакции: правка, подтверждение, запуск и запись результата
+    извлечения не перезаписывают друг друга."""
+    query = select(Passport).where(Passport.project_id == project.id, Passport.org_id == project.org_id)
+    return db.scalar(query.with_for_update(of=Passport) if lock else query)
 
 
 def to_out(passport: Passport | None) -> PassportOut:
@@ -107,7 +108,7 @@ def start_extraction(
             status.HTTP_409_CONFLICT, "Нет обработанных документов — загрузите документы проекта"
         )
 
-    passport = get_passport(db, project)
+    passport = get_passport(db, project, lock=True)
     if passport is not None and _is_running(passport):
         raise HTTPException(status.HTTP_409_CONFLICT, "Паспорт уже извлекается")
     if passport is None:
@@ -133,7 +134,7 @@ def start_extraction(
 
 
 def _editable(db: Session, project: Project) -> Passport:
-    passport = get_passport(db, project)
+    passport = get_passport(db, project, lock=True)
     if passport is None or passport.status in (PassportStatus.extracting, PassportStatus.failed):
         raise HTTPException(status.HTTP_409_CONFLICT, "Паспорт ещё не извлечён")
     return passport

@@ -2,7 +2,14 @@
 
 from pathlib import Path
 
-from app.pipeline.ingest.base import IngestError, Page, Parsed, clean_text
+from app.pipeline.ingest.base import (
+    TRUNCATED_WARNING,
+    IngestError,
+    Page,
+    Parsed,
+    clean_text,
+    read_text_prefix,
+)
 
 MIME = {
     ".pdf": "application/pdf",
@@ -95,13 +102,14 @@ def parse_file(path: Path, filename: str, work_dir: Path) -> Parsed:
 
         return parse_unar(path, work_dir)
     if ext == ".txt":
-        raw = path.read_bytes()
+        raw, truncated = read_text_prefix(path)
+        meta = {"warning": TRUNCATED_WARNING} if truncated else {}
         for enc in ("utf-8-sig", "cp1251"):
             try:
-                return Parsed(kind="text", pages=[Page(no=1, text=clean_text(raw.decode(enc)))])
+                return Parsed(kind="text", pages=[Page(no=1, text=clean_text(raw.decode(enc)))], meta=meta)
             except UnicodeDecodeError:
                 continue
-        return Parsed(kind="text", pages=[Page(no=1, text=clean_text(raw.decode("latin-1")))])
+        return Parsed(kind="text", pages=[Page(no=1, text=clean_text(raw.decode("latin-1")))], meta=meta)
     raise IngestError(f"Формат {ext or 'без расширения'} не поддерживается")
 
 

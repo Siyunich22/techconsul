@@ -26,12 +26,16 @@ celery_app.conf.update(
     # (оркестратор помечает прогон прерванным), жёсткий — завершение процесса.
     task_soft_time_limit=2 * 3600,
     task_time_limit=2 * 3600 + 300,
-    # ingest (разбор, OCR, LibreOffice) — параллельно; index (модель эмбеддингов в памяти) — отдельный воркер
+    # ingest (разбор, OCR, LibreOffice) — параллельно; llm (паспорт, оценка — часы ожидания API) — своим
+    # процессом, не занимая слоты загрузки; index (модель эмбеддингов в памяти) — отдельный воркер, где
+    # query (поисковые запросы, ждут ответа до 30 с) обслуживается параллельно с индексацией пакета.
     task_routes={
         "documents.ingest": {"queue": "ingest"},
         "documents.index": {"queue": "index"},
         "references.ingest": {"queue": "index"},
-        "index.embed_query": {"queue": "index"},
+        "index.embed_query": {"queue": "query"},
+        "passport.extract": {"queue": "llm"},
+        "assessment.run": {"queue": "llm"},
     },
 )
 

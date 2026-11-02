@@ -146,10 +146,10 @@ class SyncEnqueuer:
 @pytest.fixture(autouse=True, scope="session")
 def _test_settings():
     """Тесты не скачивают модель эмбеддингов: детерминированный HashEmbedder той же размерности."""
-    from app.pipeline.embedder import get_embedder
+    from app.pipeline.embedder import _load_embedder
 
     get_settings().embedder = "hash"
-    get_embedder.cache_clear()
+    _load_embedder.cache_clear()
     yield
 
 

@@ -314,6 +314,74 @@ def extract(
     )
 
 
+def keep_expert_edits(
+    result: "ExtractionResult", old_data: dict, old_sources: dict, old_discrepancies: list
+) -> tuple["ExtractionResult", int]:
+    """Повторное извлечение не стирает работу эксперта (правило 3): поля и строки `manual` из прежнего
+    паспорта переносятся поверх ответа ИИ, комментарии к расхождениям — по полю расхождения.
+    Метки P-n нового извлечения другие — источники ручных значений сопоставляются по документу и
+    странице/листу, недостающие добавляются новыми метками."""
+    if not old_data:
+        return result, 0
+    old = PassportData.model_validate(old_data)
+    data = result.data.model_copy(deep=True)
+    sources = dict(result.sources)
+    by_place = {_place(s): label for label, s in sources.items()}
+
+    def relabel(refs: list[str]) -> list[str]:
+        out = []
+        for ref in refs:
+            src = old_sources.get(ref)
+            if src is None:
+                continue
+            label = by_place.get(_place(src))
+            if label is None:
+                label = f"P{max((int(k[1:]) for k in sources if k[1:].isdigit()), default=0) + 1}"
+                sources[label] = src
+                by_place[_place(src)] = label
+            out.append(label)
+        return out
+
+    kept = 0
+    for key in PassportData.model_fields:
+        old_section, new_section = getattr(old, key), getattr(data, key)
+        for fkey in type(old_section).model_fields:
+            value = getattr(old_section, fkey)
+            if isinstance(value, Fact) and value.manual:
+                setattr(new_section, fkey, value.model_copy(update={"refs": relabel(value.refs)}))
+                kept += 1
+            elif isinstance(value, list):
+                manual = [r for r in value if isinstance(r, Row) and r.manual]
+                if manual:
+                    current = getattr(new_section, fkey)
+                    seen = {_row_key(r) for r in current}
+                    for r in manual:
+                        if _row_key(r) not in seen:
+                            current.append(r.model_copy(update={"refs": relabel(r.refs)}))
+                            kept += 1
+    resolutions = {
+        d.get("field"): d.get("resolution") for d in old_discrepancies or [] if d.get("resolution")
+    }
+    discrepancies = [
+        d.model_copy(update={"resolution": resolutions[d.field]})
+        if not d.resolution and d.field in resolutions
+        else d
+        for d in result.discrepancies
+    ]
+    merged = ExtractionResult(data, discrepancies, sources, list(result.warnings))
+    if kept:
+        merged.warnings.append(f"Сохранены правки эксперта: {kept} (поля и строки, введённые вручную)")
+    return merged, kept
+
+
+def _place(src: dict) -> tuple:
+    return (str(src.get("document_id")), src.get("page"), src.get("sheet"))
+
+
+def _row_key(row: Row) -> tuple:
+    return tuple(sorted(row.model_dump(exclude={"refs", "quote", "confidence", "manual"}).items()))
+
+
 def _all_refs(data: PassportData, discrepancies: list[Discrepancy]) -> set[str]:
     refs: set[str] = set()
     for key in PassportData.model_fields:
@@ -374,12 +442,18 @@ def run_extraction(db: Session, passport_id: uuid.UUID, run_id: uuid.UUID, llm: 
             return
         raise  # KeyboardInterrupt/SystemExit — дальше
 
-    db.refresh(passport)
-    if passport.run_id != run_id:  # пока шло извлечение, запустили новое
+    db.rollback()  # снимок паспорта — под блокировкой строки: правка не проскочит между чтением и записью
+    passport = db.scalar(select(Passport).where(Passport.id == passport_id).with_for_update(of=Passport))
+    if passport is None or passport.run_id != run_id:  # пока шло извлечение, запустили новое
+        db.rollback()
         return
+    ai_payload = result.data.model_dump(mode="json")  # чистый ответ ИИ — для сравнения с правками
+    result, _ = keep_expert_edits(
+        result, passport.data_json or {}, passport.sources_json or {}, passport.discrepancies_json or []
+    )
     payload = result.data.model_dump(mode="json")
     passport.data_json = payload
-    passport.ai_data_json = payload
+    passport.ai_data_json = ai_payload
     passport.discrepancies_json = [d.model_dump(mode="json") for d in result.discrepancies]
     passport.sources_json = result.sources
     passport.warnings_json = result.warnings

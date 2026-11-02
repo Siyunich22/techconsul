@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     analysis_web_fetch_max_content_tokens: int = 20_000  # страница целиком повторно оплачивается каждым ходом
     analysis_stale_after_min: int = 180  # прогон «идёт» дольше — считаем, что воркер упал
 
+    # лимиты частоты входа/регистрации (Redis); в dev-стеке выключены — e2e регистрирует десятки организаций
+    rate_limits_enabled: bool = True
+
     db_connect_timeout_s: int = 5
     health_check_timeout_s: float = 3.0
 

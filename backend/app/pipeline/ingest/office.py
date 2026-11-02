@@ -4,8 +4,11 @@ PDF-версия даёт реальные номера страниц (для �
 предпросмотр с подсветкой. Если LibreOffice не справился — текст docx/pptx извлекается напрямую.
 """
 
+import contextlib
 import logging
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import uuid
@@ -18,11 +21,59 @@ from app.pipeline.ingest.pdf import parse_pdf
 log = logging.getLogger(__name__)
 
 
+# Профиль LibreOffice для недоверенных файлов: сеть — через несуществующий прокси (WEBSERVICE, внешние
+# ссылки и картинки по URL не дотянутся до внутренних сервисов — SSRF), обновление связей и макросы
+# выключены, активное содержимое заблокировано.
+_INET = "/org.openoffice.Inet/Settings"
+_SCRIPTING = "/org.openoffice.Office.Common/Security/Scripting"
+_PROFILE_SETTINGS = [
+    (_INET, "ooInetProxyType", "1"),  # ручной прокси
+    (_INET, "ooInetHTTPProxyName", "127.0.0.1"),
+    (_INET, "ooInetHTTPProxyPort", "9"),  # discard — соединение не установится
+    (_INET, "ooInetHTTPSProxyName", "127.0.0.1"),
+    (_INET, "ooInetHTTPSProxyPort", "9"),
+    (_INET, "ooInetFTPProxyName", "127.0.0.1"),
+    (_INET, "ooInetFTPProxyPort", "9"),
+    (_INET, "ooInetNoProxy", ""),
+    (_SCRIPTING, "MacroSecurityLevel", "3"),
+    (_SCRIPTING, "DisableMacrosExecution", "true"),
+    (_SCRIPTING, "DisableActiveContent", "true"),
+    (_SCRIPTING, "BlockUntrustedRefererLinks", "true"),
+]
+
+
+def _profile_xcu() -> str:
+    items = "\n".join(
+        f'<item oor:path="{path}"><prop oor:name="{name}" oor:op="fuse"><value>{value}</value></prop></item>'
+        for path, name, value in _PROFILE_SETTINGS
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<oor:items xmlns:oor="http://openoffice.org/2001/registry" '
+        'xmlns:xs="http://www.w3.org/2001/XMLSchema">\n'
+        f"{items}\n</oor:items>\n"
+    )
+
+
+def _sandbox_env(profile: Path) -> dict[str, str]:
+    """Окружение без секретов воркера (ключ API, пароль БД, JWT): конвертер их не получает."""
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": str(profile),
+        "TMPDIR": str(profile),
+        "LANG": "C.UTF-8",
+        "SAL_USE_VCLPLUGIN": "svp",
+    }
+
+
 def soffice_convert(src: Path, out_dir: Path, target: str) -> Path:
     """soffice --headless --convert-to <target>.
 
-    Отдельный профиль LibreOffice на вызов — параллельные воркеры не мешают друг другу."""
+    Отдельный профиль LibreOffice на вызов — параллельные воркеры не мешают друг другу. При превышении
+    времени завершается вся группа процессов (soffice запускает дочерний soffice.bin)."""
     profile = Path(tempfile.gettempdir()) / f"lo_profile_{uuid.uuid4().hex}"
+    (profile / "user").mkdir(parents=True)
+    (profile / "user" / "registrymodifications.xcu").write_text(_profile_xcu(), encoding="utf-8")
     cmd = [
         "soffice",
         f"-env:UserInstallation=file://{profile.as_posix()}",
@@ -35,13 +86,22 @@ def soffice_convert(src: Path, out_dir: Path, target: str) -> Path:
         str(src),
     ]
     try:
-        subprocess.run(cmd, capture_output=True, timeout=get_settings().soffice_timeout_s, check=True)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_sandbox_env(profile),
+            start_new_session=True,
+        )
+        try:
+            _, stderr = proc.communicate(timeout=get_settings().soffice_timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            _kill_group(proc)
+            raise IngestError("Конвертация LibreOffice превысила лимит времени") from exc
+        if proc.returncode != 0:
+            raise IngestError(f"LibreOffice: {stderr.decode(errors='replace')[:300]}")
     except FileNotFoundError as exc:
         raise IngestError("LibreOffice не установлен") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise IngestError("Конвертация LibreOffice превысила лимит времени") from exc
-    except subprocess.CalledProcessError as exc:
-        raise IngestError(f"LibreOffice: {exc.stderr.decode(errors='replace')[:300]}") from exc
     finally:
         shutil.rmtree(profile, ignore_errors=True)
     ext = target.split(":", 1)[0]
@@ -49,6 +109,12 @@ def soffice_convert(src: Path, out_dir: Path, target: str) -> Path:
     if not result.exists():
         raise IngestError("LibreOffice не создал выходной файл")
     return result
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    proc.communicate()
 
 
 # Экспорт в PDF напрямую из OOXML иногда падает (например, на надстройках Office — webextensions);

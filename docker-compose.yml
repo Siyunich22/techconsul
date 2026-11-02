@@ -2,6 +2,7 @@ name: techocenka
 
 x-backend-env: &backend-env
   APP_ENV: ${APP_ENV:-dev}
+  RATE_LIMITS_ENABLED: ${RATE_LIMITS_ENABLED:-false}
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-techocenka}:${POSTGRES_PASSWORD:-techocenka}@postgres:5432/${POSTGRES_DB:-techocenka}
   TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-techocenka}:${POSTGRES_PASSWORD:-techocenka}@postgres:5432/${POSTGRES_DB:-techocenka}_test
   REDIS_URL: redis://redis:6379/0
@@ -90,12 +91,12 @@ services:
     ports: ["${MAILPIT_SMTP_PORT:-1025}:1025", "${MAILPIT_UI_PORT:-8025}:8025"]
 
   api:
-    build: {context: ., dockerfile: backend/Dockerfile}
+    build: {context: ., dockerfile: backend/Dockerfile, args: {INSTALL_DEV: "1"}}
     image: techocenka-backend:dev  # один образ для api и воркеров
     environment: *backend-env
     command: >
       sh -c "alembic upgrade head &&
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --timeout-keep-alive 75"
     ports: ["${API_PORT:-8000}:8000"]
     volumes: ["./backend:/app", "./templates:/templates:ro", "models:/models"]
     depends_on:
@@ -109,22 +110,25 @@ services:
       retries: 12
       start_period: 20s
 
-  # разбор, OCR, LibreOffice, распаковка — параллельно
+  # разбор, OCR, LibreOffice, распаковка — параллельно; задачи ИИ (паспорт, оценка) — отдельным процессом
   worker:
     image: techocenka-backend:dev  # образ собирает api: три параллельные сборки одного тега зависали
     pull_policy: never
-    environment: *backend-env
-    command: celery -A workers.celery_app worker -Q ingest,default --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-4} -n ingest@%h
+    environment:
+      <<: *backend-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+    command: bash workers/start.sh worker
     volumes: ["./backend:/app", "./templates:/templates:ro"]
     depends_on:
       api: {condition: service_healthy}
 
-  # эмбеддинги: модель (~2 ГБ) загружена один раз, поэтому один процесс
+  # эмбеддинги: модель (~2 ГБ) загружена один раз — один процесс с потоками (очереди query и index)
   worker-index:
     image: techocenka-backend:dev  # образ собирает api: три параллельные сборки одного тега зависали
     pull_policy: never
     environment: *backend-env
-    command: celery -A workers.celery_app worker -Q index --loglevel=INFO --concurrency=1 -n index@%h
+    command: bash workers/start.sh index
     volumes: ["./backend:/app", "./templates:/templates:ro", "models:/models"]
     depends_on:
       api: {condition: service_healthy}

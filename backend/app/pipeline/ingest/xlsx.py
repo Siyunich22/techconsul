@@ -5,13 +5,22 @@
 """
 
 import csv
+import io
 import logging
+import shutil
 from pathlib import Path
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from app.pipeline.ingest.base import IngestError, Page, Parsed, Table
+from app.pipeline.ingest.base import (
+    TRUNCATED_WARNING,
+    IngestError,
+    Page,
+    Parsed,
+    Table,
+    read_text_prefix,
+)
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +36,18 @@ def _fmt(v) -> str:
     return str(v).strip()
 
 
+def _one_line(cell: str) -> str:
+    """Перенос строки в ячейке (Alt+Enter) — в « / »: строка листа должна остаться одной строкой
+    текста, иначе при переиндексации продолжение ячейки теряется (строки разбираются по «[n] »)."""
+    return (
+        " / ".join(part.strip() for part in cell.splitlines() if part.strip())
+        if "\n" in cell or "\r" in cell
+        else cell
+    )
+
+
 def _sheet_page(no: int, name: str, rows: list[tuple[int, list[str]]]) -> Page:
+    rows = [(r, [_one_line(c) for c in cells]) for r, cells in rows]
     rows = [(r, cells) for r, cells in rows if any(cells)]
     width = max((len(c) for _, c in rows), default=0)
     width = min(width, MAX_COLS)
@@ -79,7 +99,7 @@ def parse_xlsx(path: Path, work_dir: Path) -> Parsed:
 
             # конвертация копии в xlsx заставляет LibreOffice пересчитать формулы и сохранить значения
             src = work_dir / f"recalc_{path.stem}{path.suffix}"
-            src.write_bytes(path.read_bytes())
+            shutil.copyfile(path, src)
             out_dir = work_dir / "recalc"
             out_dir.mkdir(exist_ok=True)
             path = soffice_convert(src, out_dir, "xlsx")
@@ -120,7 +140,7 @@ def parse_xls(path: Path) -> Parsed:
 
 
 def parse_csv(path: Path) -> Parsed:
-    raw = path.read_bytes()
+    raw, truncated = read_text_prefix(path)
     for enc in ("utf-8-sig", "cp1251", "latin-1"):
         try:
             text = raw.decode(enc)
@@ -131,7 +151,11 @@ def parse_csv(path: Path) -> Parsed:
         dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
     except csv.Error:
         dialect = csv.excel
-    rows = [
-        (i, [c.strip() for c in row]) for i, row in enumerate(csv.reader(text.splitlines(), dialect), start=1)
-    ]
-    return Parsed(kind="sheet", pages=[_sheet_page(1, path.stem, rows[:MAX_ROWS_PER_SHEET])])
+    # csv.reader по потоку, а не по строкам: поле в кавычках может содержать перенос строки
+    rows = []
+    for i, row in enumerate(csv.reader(io.StringIO(text, newline=""), dialect), start=1):
+        if i > MAX_ROWS_PER_SHEET:
+            break
+        rows.append((i, [c.strip() for c in row]))
+    meta = {"warning": TRUNCATED_WARNING} if truncated else {}
+    return Parsed(kind="sheet", pages=[_sheet_page(1, path.stem, rows)], meta=meta)

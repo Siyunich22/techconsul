@@ -157,3 +157,20 @@ def test_concurrent_start_is_serialized(ready_project, db):  # noqa: F811
     c, p = ready_project
     _queued_run(c, p, db)
     assert c.post(f"/api/v1/projects/{p['id']}/runs").status_code == 409  # прогон в очереди — второй нельзя
+
+
+def test_cross_site_post_is_rejected(register):
+    c = register()
+    evil = c.post(
+        "/api/v1/projects",
+        json={"name": "X", "customer_name": "Y"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert evil.status_code == 403
+    same = c.post(
+        "/api/v1/projects",
+        json={"name": "X", "customer_name": "Y"},
+        headers={"Origin": "https://app.example.kz", "X-Forwarded-Host": "app.example.kz"},
+    )
+    assert same.status_code == 201  # через прокси Next.js: свой хост в X-Forwarded-Host
+    assert c.get("/api/v1/projects", headers={"Origin": "https://evil.example"}).status_code == 200

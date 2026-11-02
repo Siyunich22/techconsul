@@ -1,6 +1,8 @@
 """Celery-задачи конвейера. Логика — в app.pipeline (тестируется без Celery)."""
 
+import threading
 import uuid
+from contextlib import contextmanager
 
 from app.assessment.runner import run_items
 from app.core.db import get_sessionmaker
@@ -31,13 +33,28 @@ def ingest_document_task(doc_id: str) -> None:
         process.ingest_document(db, get_storage(), uuid.UUID(doc_id), enqueue_ingest, enqueue_index)
 
 
-@celery_app.task(name="documents.index", soft_time_limit=4 * 3600, time_limit=4 * 3600 + 300)
-def index_document_task(doc_id: str) -> None:
-    with get_sessionmaker()() as db:
+# worker-index работает потоками: одновременно — одна индексация (CPU и память модели), остальные
+# потоки свободны для поисковых запросов. Занято — задача возвращается в очередь, поток не ждёт.
+_INDEX_SLOT = threading.Lock()
+
+
+@contextmanager
+def _index_slot(task):
+    if not _INDEX_SLOT.acquire(blocking=False):
+        raise task.retry(countdown=15)  # без лимита повторов: max_retries=None в декораторе задачи
+    try:
+        yield
+    finally:
+        _INDEX_SLOT.release()
+
+
+@celery_app.task(name="documents.index", bind=True, max_retries=None)
+def index_document_task(self, doc_id: str) -> None:
+    with _index_slot(self), get_sessionmaker()() as db:
         process.index_document(db, uuid.UUID(doc_id))
 
 
-@celery_app.task(name="index.embed_query", soft_time_limit=60, time_limit=90)
+@celery_app.task(name="index.embed_query", expires=60)  # запрос, который уже никто не ждёт, не считаем
 def embed_query_task(text: str) -> list[float]:
     """Эмбеддинг поискового запроса для API (модель загружена только в worker-index)."""
     from app.pipeline.embedder import get_embedder
@@ -45,9 +62,9 @@ def embed_query_task(text: str) -> list[float]:
     return get_embedder().embed_query(text)
 
 
-@celery_app.task(name="references.ingest", soft_time_limit=4 * 3600, time_limit=4 * 3600 + 300)
-def ingest_reference_task(ref_id: str) -> None:
-    with get_sessionmaker()() as db:
+@celery_app.task(name="references.ingest", bind=True, max_retries=None)
+def ingest_reference_task(self, ref_id: str) -> None:
+    with _index_slot(self), get_sessionmaker()() as db:
         references.ingest_reference(db, get_storage(), uuid.UUID(ref_id))
 
 
