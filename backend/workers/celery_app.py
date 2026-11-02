@@ -1,4 +1,8 @@
+import logging
+import threading
+
 from celery import Celery
+from celery.signals import worker_ready
 
 from app.core.config import get_settings
 
@@ -43,3 +47,22 @@ celery_app.conf.update(
 @celery_app.task(name="system.ping")
 def ping() -> str:
     return "pong"
+
+
+@worker_ready.connect
+def _warm_up_embedder(sender, **_kwargs) -> None:
+    """Воркер с очередью query загружает модель эмбеддингов сразу после старта (~25 с), в фоне:
+    иначе первый поисковый запрос после деплоя ждёт загрузку и упирается в таймаут ожидания (30 с)."""
+    queues = {q.name for q in sender.app.amqp.queues.consume_from.values()}  # sender — Consumer
+    if "query" not in queues:
+        return
+
+    def load() -> None:
+        from app.pipeline.embedder import get_embedder
+
+        try:
+            get_embedder().embed_query("прогрев")
+        except Exception:
+            logging.getLogger(__name__).exception("Прогрев модели эмбеддингов не удался")
+
+    threading.Thread(target=load, name="embedder-warmup", daemon=True).start()
