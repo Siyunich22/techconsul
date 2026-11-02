@@ -13,6 +13,8 @@ class OrgSettings(BaseModel):
     page_number_format: Literal["arabic", "page_of_total"] = "arabic"
     default_font: str = "Times New Roman"
     default_font_size: int = Field(12, ge=8, le=16)
+    # TZ §9: веб-поиск агентов (запросы уходят во внешний поиск; наименования Заказчика не подставляются)
+    web_search_enabled: bool = True
 
 
 class OrgOut(ORMModel):

@@ -1,5 +1,14 @@
 """ORM-модели. Каждый модуль с моделями импортируется здесь, чтобы Alembic видел их в Base.metadata."""
 
+from app.models.assessment import (
+    AssessmentRun,
+    ItemStatus,
+    ResultAuthor,
+    ReviewStatus,
+    RunStatus,
+    SectionResult,
+    Source,
+)
 from app.models.document import (
     CategorySource,
     Chunk,
@@ -26,6 +35,13 @@ from app.models.passport import Passport, PassportStatus
 from app.models.project import MemberRole, Project, ProjectMember, ProjectStatus, TemplateVersion
 
 __all__ = [
+    "AssessmentRun",
+    "ItemStatus",
+    "ResultAuthor",
+    "ReviewStatus",
+    "RunStatus",
+    "SectionResult",
+    "Source",
     "AuditLog",
     "CategorySource",
     "Chunk",

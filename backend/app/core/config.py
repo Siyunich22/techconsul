@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     passport_reduce_max_tokens: int = 64_000  # сведение больших таблиц; потоком
     passport_stale_after_min: int = 60  # «извлекается» дольше — считаем, что воркер упал
 
+    # анализ пунктов (TZ §5.3)
+    analysis_concurrency: int = 4  # пунктов параллельно
+    analysis_max_tool_turns: int = 12  # обращений к инструментам на пункт, затем — итог
+    analysis_max_tokens: int = 32_000  # на один ответ модели (потоком)
+    analysis_web_search_max_uses: int = 5
+    analysis_web_fetch_max_uses: int = 3
+    analysis_stale_after_min: int = 180  # прогон «идёт» дольше — считаем, что воркер упал
+
     db_connect_timeout_s: int = 5
     health_check_timeout_s: float = 3.0
 

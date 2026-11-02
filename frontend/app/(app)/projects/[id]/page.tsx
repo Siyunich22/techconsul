@@ -1,13 +1,20 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { DocumentsTab } from "@/components/documents/documents-tab";
+import { AssessmentTab } from "@/components/assessment/assessment-tab";
 import { PassportTab } from "@/components/passport/passport-tab";
 import { IndependenceForm } from "@/components/project/independence-form";
 import { TemplateTree, type TreeNode } from "@/components/template-tree";
@@ -20,15 +27,40 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { api, errorMessage } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
-import { qk, useExperts, useMe, useProject, useTemplateSections } from "@/lib/hooks";
-import type { Independence, MemberInput, PassportInput, Project } from "@/lib/types";
+import {
+  qk,
+  useExperts,
+  useMe,
+  useProject,
+  useTemplateSections,
+} from "@/lib/hooks";
+import type {
+  Independence,
+  MemberInput,
+  PassportInput,
+  Project,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Tab = "overview" | "independence" | "team" | "documents" | "passport" | "sections";
-const TABS: Tab[] = ["overview", "independence", "team", "documents", "passport", "sections"];
+type Tab =
+  | "overview"
+  | "independence"
+  | "team"
+  | "documents"
+  | "passport"
+  | "assessment"
+  | "sections";
+const TABS: Tab[] = [
+  "overview",
+  "independence",
+  "team",
+  "documents",
+  "passport",
+  "assessment",
+  "sections",
+];
 // Вкладки следующих фаз (TZ §4.5 А–Ж) — номер фазы из TZ §12.
 const FUTURE_TABS: [string, number][] = [
-  ["assessment", 5],
   ["risks", 6],
   ["coverage", 7],
   ["result", 8],
@@ -50,7 +82,11 @@ function toPassport(p: Project): PassportInput {
 }
 
 function toMembers(p: Project): MemberInput[] {
-  return p.members.map((m) => ({ expert_id: m.expert.id, role: m.role, assigned_items: m.assigned_items }));
+  return p.members.map((m) => ({
+    expert_id: m.expert.id,
+    role: m.role,
+    assigned_items: m.assigned_items,
+  }));
 }
 
 export default function ProjectPage() {
@@ -65,7 +101,11 @@ export default function ProjectPage() {
   const canReview = canManage || me.data?.role === "expert";
   const project = useProject(id);
   const [tab, setTab] = useState<Tab>("overview");
-  const [deepLink, setDeepLink] = useState<{ docId: string; page: number; q?: string }>();
+  const [deepLink, setDeepLink] = useState<{
+    docId: string;
+    page: number;
+    q?: string;
+  }>();
 
   // ?tab=documents&doc=<id>&page=<n>&q=<фрагмент> — переход по ссылке-источнику
   useEffect(() => {
@@ -73,7 +113,12 @@ export default function ProjectPage() {
     const requested = params.get("tab") as Tab | null;
     if (requested && TABS.includes(requested)) setTab(requested);
     const doc = params.get("doc");
-    if (doc) setDeepLink({ docId: doc, page: Number(params.get("page") ?? 1), q: params.get("q") ?? undefined });
+    if (doc)
+      setDeepLink({
+        docId: doc,
+        page: Number(params.get("page") ?? 1),
+        q: params.get("q") ?? undefined,
+      });
   }, []);
 
   const invalidate = (p: Project) => {
@@ -81,7 +126,8 @@ export default function ProjectPage() {
     queryClient.invalidateQueries({ queryKey: ["projects"] });
   };
   const archive = useMutation({
-    mutationFn: (action: "archive" | "unarchive") => api.post<Project>(`/projects/${id}/${action}`),
+    mutationFn: (action: "archive" | "unarchive") =>
+      api.post<Project>(`/projects/${id}/${action}`),
     onSuccess: invalidate,
   });
   const remove = useMutation({
@@ -92,15 +138,20 @@ export default function ProjectPage() {
     },
   });
 
-  if (project.isPending) return <p className="text-sm text-muted-foreground">{tc("loading")}</p>;
-  if (project.isError) return <Alert variant="destructive">{t("notFound")}</Alert>;
+  if (project.isPending)
+    return <p className="text-sm text-muted-foreground">{tc("loading")}</p>;
+  if (project.isError)
+    return <Alert variant="destructive">{t("notFound")}</Alert>;
   const p = project.data;
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <Link href="/portfolio" className="text-sm text-muted-foreground hover:underline">
+          <Link
+            href="/portfolio"
+            className="text-sm text-muted-foreground hover:underline"
+          >
             ← {tc("back")}
           </Link>
           <div className="flex flex-wrap items-center gap-3">
@@ -117,18 +168,25 @@ export default function ProjectPage() {
             )}
           </div>
           <p className="text-sm text-muted-foreground">
-            {p.customer_name} · {formatMoney(p.budget_amount, p.currency)} · {t("createdBy")}: {p.owner.full_name} ·{" "}
-            {t("template")}: {p.template_version.code}
+            {p.customer_name} · {formatMoney(p.budget_amount, p.currency)} ·{" "}
+            {t("createdBy")}: {p.owner.full_name} · {t("template")}:{" "}
+            {p.template_version.code}
           </p>
         </div>
         {canManage && (
           <div className="flex gap-2">
             {p.status === "archived" ? (
-              <Button variant="outline" onClick={() => archive.mutate("unarchive")}>
+              <Button
+                variant="outline"
+                onClick={() => archive.mutate("unarchive")}
+              >
                 <ArchiveRestore /> {t("unarchive")}
               </Button>
             ) : (
-              <Button variant="outline" onClick={() => archive.mutate("archive")}>
+              <Button
+                variant="outline"
+                onClick={() => archive.mutate("archive")}
+              >
                 <Archive /> {t("archive")}
               </Button>
             )}
@@ -136,7 +194,9 @@ export default function ProjectPage() {
               <Button
                 variant="outline"
                 className="text-destructive"
-                onClick={() => window.confirm(tc("confirmDelete")) && remove.mutate()}
+                onClick={() =>
+                  window.confirm(tc("confirmDelete")) && remove.mutate()
+                }
               >
                 <Trash2 /> {t("deleteDraft")}
               </Button>
@@ -148,7 +208,9 @@ export default function ProjectPage() {
       <div className="flex gap-1 overflow-x-auto border-b">
         {TABS.map((key) => (
           <TabButton key={key} active={tab === key} onClick={() => setTab(key)}>
-            {key === "overview" || key === "documents" || key === "passport" || key === "sections" ? t(`tabs.${key}`) : t(key)}
+            {key === "independence" || key === "team"
+              ? t(key)
+              : t(`tabs.${key}`)}
           </TabButton>
         ))}
         {FUTURE_TABS.map(([key, phase]) => (
@@ -158,10 +220,22 @@ export default function ProjectPage() {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab project={p} canEdit={canManage} onSaved={invalidate} />}
-      {tab === "independence" && <IndependenceTab project={p} canEdit={canManage} onSaved={invalidate} />}
-      {tab === "team" && <TeamTab project={p} canEdit={canManage} onSaved={invalidate} />}
-      {tab === "documents" && <DocumentsTab projectId={p.id} canDelete={canManage} initialPreview={deepLink} />}
+      {tab === "overview" && (
+        <OverviewTab project={p} canEdit={canManage} onSaved={invalidate} />
+      )}
+      {tab === "independence" && (
+        <IndependenceTab project={p} canEdit={canManage} onSaved={invalidate} />
+      )}
+      {tab === "team" && (
+        <TeamTab project={p} canEdit={canManage} onSaved={invalidate} />
+      )}
+      {tab === "documents" && (
+        <DocumentsTab
+          projectId={p.id}
+          canDelete={canManage}
+          initialPreview={deepLink}
+        />
+      )}
       {tab === "passport" && (
         <PassportTab
           projectId={p.id}
@@ -172,7 +246,20 @@ export default function ProjectPage() {
           }}
         />
       )}
-      {tab === "sections" && <SectionsTab projectId={p.id} templateId={p.template_version.id} />}
+      {tab === "assessment" && (
+        <AssessmentTab
+          projectId={p.id}
+          canRun={canManage}
+          canRerun={canReview}
+          onOpenSource={(docId, page, q) => {
+            setDeepLink({ docId, page, q });
+            setTab("documents");
+          }}
+        />
+      )}
+      {tab === "sections" && (
+        <SectionsTab projectId={p.id} templateId={p.template_version.id} />
+      )}
     </div>
   );
 }
@@ -208,7 +295,17 @@ function TabButton({
   );
 }
 
-function SaveBar({ pending, error, saved, onSave }: { pending: boolean; error: unknown; saved: boolean; onSave: () => void }) {
+function SaveBar({
+  pending,
+  error,
+  saved,
+  onSave,
+}: {
+  pending: boolean;
+  error: unknown;
+  saved: boolean;
+  onSave: () => void;
+}) {
   const tc = useTranslations("common");
   return (
     <div className="mt-5 flex items-center gap-3">
@@ -216,12 +313,18 @@ function SaveBar({ pending, error, saved, onSave }: { pending: boolean; error: u
         {pending ? tc("saving") : tc("save")}
       </Button>
       {saved && <span className="text-sm text-emerald-700">{tc("saved")}</span>}
-      {error ? <span className="text-sm text-destructive">{errorMessage(error)}</span> : null}
+      {error ? (
+        <span className="text-sm text-destructive">{errorMessage(error)}</span>
+      ) : null}
     </div>
   );
 }
 
-function useSave<T>(id: string, onSaved: (p: Project) => void, fn: (body: T) => Promise<Project>) {
+function useSave<T>(
+  id: string,
+  onSaved: (p: Project) => void,
+  fn: (body: T) => Promise<Project>,
+) {
   const [saved, setSaved] = useState(false);
   const m = useMutation({
     mutationFn: fn,
@@ -234,14 +337,22 @@ function useSave<T>(id: string, onSaved: (p: Project) => void, fn: (body: T) => 
   return { ...m, saved };
 }
 
-type TabProps = { project: Project; canEdit: boolean; onSaved: (p: Project) => void };
+type TabProps = {
+  project: Project;
+  canEdit: boolean;
+  onSaved: (p: Project) => void;
+};
 
 function OverviewTab({ project, canEdit, onSaved }: TabProps) {
   const [value, setValue] = useState(toPassport(project));
   const sections = useTemplateSections(project.template_version.id);
-  const [enabledOptional, setEnabledOptional] = useState(project.enabled_optional_items);
+  const [enabledOptional, setEnabledOptional] = useState(
+    project.enabled_optional_items,
+  );
   useEffect(() => setValue(toPassport(project)), [project]);
-  const save = useSave(project.id, onSaved, (body: object) => api.patch<Project>(`/projects/${project.id}`, body));
+  const save = useSave(project.id, onSaved, (body: object) =>
+    api.patch<Project>(`/projects/${project.id}`, body),
+  );
 
   return (
     <Card>
@@ -261,7 +372,11 @@ function OverviewTab({ project, canEdit, onSaved }: TabProps) {
             error={save.error}
             saved={save.saved}
             onSave={() =>
-              save.mutate({ ...value, budget_amount: value.budget_amount || null, enabled_optional_items: enabledOptional })
+              save.mutate({
+                ...value,
+                budget_amount: value.budget_amount || null,
+                enabled_optional_items: enabledOptional,
+              })
             }
           />
         )}
@@ -279,13 +394,23 @@ function IndependenceTab({ project, canEdit, onSaved }: TabProps) {
   return (
     <Card>
       <CardContent className="p-6">
-        <Alert variant={project.independence.is_complete ? "success" : "warning"} className="mb-5">
+        <Alert
+          variant={project.independence.is_complete ? "success" : "warning"}
+          className="mb-5"
+        >
           {project.independence.is_complete ? t("complete") : t("incomplete")}
         </Alert>
         <fieldset disabled={!canEdit}>
           <IndependenceForm value={value} onChange={setValue} />
         </fieldset>
-        {canEdit && <SaveBar pending={save.isPending} error={save.error} saved={save.saved} onSave={() => save.mutate(value)} />}
+        {canEdit && (
+          <SaveBar
+            pending={save.isPending}
+            error={save.error}
+            saved={save.saved}
+            onSave={() => save.mutate(value)}
+          />
+        )}
       </CardContent>
     </Card>
   );
@@ -316,25 +441,46 @@ function TeamTab({ project, canEdit, onSaved }: TabProps) {
             enabledOptional={project.enabled_optional_items}
           />
         </fieldset>
-        {canEdit && <SaveBar pending={save.isPending} error={save.error} saved={save.saved} onSave={() => save.mutate(value)} />}
+        {canEdit && (
+          <SaveBar
+            pending={save.isPending}
+            error={save.error}
+            saved={save.saved}
+            onSave={() => save.mutate(value)}
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function SectionsTab({ projectId, templateId }: { projectId: string; templateId: string }) {
+function SectionsTab({
+  projectId,
+  templateId,
+}: {
+  projectId: string;
+  templateId: string;
+}) {
   const items = useQuery({
     queryKey: ["project-items", projectId],
     queryFn: () => api.get<TreeNode[]>(`/projects/${projectId}/items`),
   });
   const template = useQuery({
     queryKey: ["template", templateId],
-    queryFn: () => api.get<{ document_categories: Record<string, string> }>(`/templates/${templateId}`),
+    queryFn: () =>
+      api.get<{ document_categories: Record<string, string> }>(
+        `/templates/${templateId}`,
+      ),
   });
   return (
     <Card>
       <CardContent className="p-6">
-        {items.data && <TemplateTree nodes={items.data} categories={template.data?.document_categories} />}
+        {items.data && (
+          <TemplateTree
+            nodes={items.data}
+            categories={template.data?.document_categories}
+          />
+        )}
       </CardContent>
     </Card>
   );

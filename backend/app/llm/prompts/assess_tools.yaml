@@ -1,0 +1,61 @@
+# Описания инструментов агента анализа пункта (TZ §5.3). Ключ — код инструмента из `tools` пункта в YAML-шаблоне.
+# $categories подставляется списком категорий документов шаблона.
+
+project_docs:
+  name: search_project_docs
+  description: >-
+    Гибридный поиск (полнотекстовый + смысловой) по документам проекта Заказчика. Возвращает фрагменты
+    с меткой источника [S12], документом и страницей/листом. Формулируй запрос предметно, на русском
+    (например «производительность мельничного комплекса т/сут», «стоимость оборудования Bühler»).
+    Делай несколько запросов с разными формулировками, если первый не дал нужного.
+  input_schema:
+    type: object
+    properties:
+      query: {type: string, description: "Поисковый запрос"}
+      categories:
+        type: array
+        items: {type: string}
+        description: "Ограничить категориями документов (необязательно): $categories"
+      k: {type: integer, description: "Сколько фрагментов вернуть, 1–12 (по умолчанию 8)"}
+    required: [query]
+
+passport:
+  name: get_passport
+  description: >-
+    Подтверждённый экспертом паспорт проекта: площадка, технология, оборудование, сырьё, энергоресурсы,
+    бюджет, график, закупки, экология — с метками источников [S12]; и выявленные расхождения между
+    документами с решением эксперта. Без параметра — весь паспорт; с section — один раздел.
+  input_schema:
+    type: object
+    properties:
+      section:
+        type: string
+        description: "site | technology | equipment | materials | energy | budget | schedule | procurement | ecology | discrepancies"
+    required: []
+
+reference:
+  name: search_reference_library
+  description: >-
+    Поиск по справочной библиотеке платформы: справочники НДТ РК, Экологический кодекс РК, КоАП РК,
+    СН/СП РК, отраслевые стандарты. Возвращает фрагменты с меткой источника [S20] и страницей.
+  input_schema:
+    type: object
+    properties:
+      query: {type: string, description: "Поисковый запрос"}
+      kind:
+        type: string
+        description: "ndt | law | norm | standard | other — ограничить видом документа (необязательно)"
+    required: [query]
+
+calc:
+  name: calc
+  description: >-
+    Точный расчёт арифметического выражения: + - * / // % **, скобки, функции round, min, max, abs, sum.
+    Используй для удельных капзатрат, материального баланса, загрузки оборудования, норм расхода,
+    процентов и разниц — не считай в уме. Пример: «round(12500e6 / (300*330), 0)».
+  input_schema:
+    type: object
+    properties:
+      expression: {type: string, description: "Арифметическое выражение"}
+      note: {type: string, description: "Что считается (для протокола)"}
+    required: [expression]

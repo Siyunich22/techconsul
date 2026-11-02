@@ -8,6 +8,7 @@
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal, Protocol
@@ -46,6 +47,20 @@ class CallContext:
     purpose: str
     org_id: uuid.UUID | None = None
     project_id: uuid.UUID | None = None
+    run_id: uuid.UUID | None = None
+
+
+@dataclass(frozen=True)
+class AgentTool:
+    """Клиентский инструмент агента: описание для модели и исполнитель (возвращает текст результата)."""
+
+    name: str
+    description: str
+    input_schema: dict
+    run: Callable[[dict], str]
+
+    def definition(self) -> dict:
+        return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
 
 
 class LLM(Protocol):
@@ -59,6 +74,20 @@ class LLM(Protocol):
         schema: type[T],
         max_tokens: int = 4096,
         constrained: bool = True,
+    ) -> T: ...
+
+    def agent[T: BaseModel](
+        self,
+        *,
+        ctx: CallContext,
+        role: ModelRole,
+        system: str,
+        user: str,
+        tools: list[AgentTool],
+        server_tools: list[dict],
+        schema: type[T],
+        max_turns: int = 12,
+        max_tokens: int = 32_000,
     ) -> T: ...
 
 
@@ -135,12 +164,80 @@ class AnthropicLLM:
                 messages = [{"role": "user", "content": f"{user}\n\n{retry_note}"}]
         raise LLMOutputError(str(last_error))
 
-    def _call(self, ctx, model, system, messages, schema, max_tokens):
+    def agent[T: BaseModel](
+        self,
+        *,
+        ctx: CallContext,
+        role: ModelRole,
+        system: str,
+        user: str,
+        tools: list[AgentTool],
+        server_tools: list[dict],
+        schema: type[T],
+        max_turns: int = 12,
+        max_tokens: int = 32_000,
+    ) -> T:
+        """Цикл инструментов (TZ §5.3): модель вызывает инструменты, итог — JSON по schema.
+
+        Клиентские инструменты исполняются здесь; серверные (web search/fetch) — на стороне Anthropic,
+        `pause_turn` продолжается тем же запросом. История только дополняется (preserved thinking).
+        После max_turns инструменты отключаются (tool_choice none) — модель обязана дать итог.
+        Невалидный итог — один повтор с ошибкой (правило 7)."""
+        model = model_for(role)
+        system = f"{system}\n\n{_json_instruction(schema)}"
+        by_name = {t.name: t for t in tools}
+        definitions = [t.definition() for t in tools] + list(server_tools)
+        messages: list[dict] = [{"role": "user", "content": user}]
+        turns = continuations = 0
+        retried = False
+        while True:
+            extra: dict = {"tools": definitions} if definitions else {}
+            if definitions and (turns >= max_turns or retried):
+                extra["tool_choice"] = {"type": "none"}
+            response = self._call(ctx, model, system, messages, None, max_tokens, **extra)
+            if response.stop_reason == "refusal":
+                raise LLMRefusal(f"Модель отказалась отвечать ({ctx.purpose})")
+            messages.append({"role": "assistant", "content": response.content})
+            if response.stop_reason == "pause_turn":
+                continuations += 1
+                if continuations > 5:
+                    raise LLMOutputError("Серверные инструменты не завершились за 5 продолжений")
+                continue
+            calls = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+            if response.stop_reason == "tool_use" and calls:
+                turns += 1
+                results = [_run_tool(by_name, call) for call in calls]
+                if turns >= max_turns:
+                    note = "Лимит обращений к инструментам исчерпан — дай итоговый ответ."
+                    results.append({"type": "text", "text": note})
+                messages.append({"role": "user", "content": results})
+                continue
+            if response.stop_reason == "max_tokens":
+                error: Exception = LLMOutputError(f"Ответ обрезан лимитом max_tokens={max_tokens}")
+            else:
+                try:
+                    return _parse_json(_text(response), schema)
+                except (ValidationError, LLMOutputError, ValueError) as exc:
+                    error = exc
+            log.warning("Невалидный итог агента (%s): %s", ctx.purpose, error)
+            if retried:
+                raise LLMOutputError(str(error))
+            retried = True
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"Итог не прошёл проверку схемы: {str(error)[:2000]}. "
+                    "Повтори итоговый ответ строго по схеме, без вызова инструментов.",
+                }
+            )
+
+    def _call(self, ctx, model, system, messages, schema, max_tokens, **extra):
         params = {
             "model": model,
             "max_tokens": max_tokens,
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": messages,
+            **extra,
         }
         try:
             if schema is None:
@@ -182,6 +279,7 @@ def _store_call(db: Session, ctx, model, tokens, status, error, request_id) -> N
         LlmCall(
             org_id=ctx.org_id,
             project_id=ctx.project_id,
+            run_id=ctx.run_id,
             purpose=ctx.purpose,
             model=model,
             input_tokens=tokens["input_tokens"],
@@ -195,6 +293,17 @@ def _store_call(db: Session, ctx, model, tokens, status, error, request_id) -> N
         )
     )
     db.commit()
+
+
+def _run_tool(by_name: dict[str, AgentTool], call) -> dict:
+    tool = by_name.get(call.name)
+    try:
+        if tool is None:
+            raise ValueError(f"Инструмент {call.name} недоступен для этого пункта")
+        return {"type": "tool_result", "tool_use_id": call.id, "content": tool.run(dict(call.input or {}))}
+    except Exception as exc:  # ошибка инструмента — сообщение модели, а не падение пункта
+        log.warning("Инструмент %s: %s", call.name, exc)
+        return {"type": "tool_result", "tool_use_id": call.id, "content": f"Ошибка: {exc}", "is_error": True}
 
 
 def _json_instruction(schema: type[BaseModel]) -> str:

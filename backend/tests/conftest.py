@@ -2,6 +2,7 @@ import io
 import os
 import uuid
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,28 @@ class FakeLLM:
         if not self.answers:
             raise LLMUnavailable("FakeLLM: ответов нет")
         answer = self.answers.pop(0)
+        return schema.model_validate(answer)
+
+    agent_handler = None  # agent_handler(purpose, user, tools: dict[name, AgentTool], server_tools) -> dict
+
+    def agent(self, *, ctx, role, system, user, tools, server_tools, schema, max_turns=12, max_tokens=32_000):
+        from app.llm.client import LLMUnavailable
+
+        self.calls.append(
+            {
+                "purpose": ctx.purpose,
+                "role": role,
+                "system": system,
+                "user": user,
+                "schema": schema.__name__,
+                "tools": [t.name for t in tools],
+                "server_tools": [t["name"] for t in server_tools],
+                "run_id": ctx.run_id,
+            }
+        )
+        if self.agent_handler is None:
+            raise LLMUnavailable("FakeLLM: агент не настроен")
+        answer = self.agent_handler(ctx.purpose, user, {t.name: t for t in tools}, server_tools)
         return schema.model_validate(answer)
 
 
@@ -210,14 +233,24 @@ def enqueuer(db, storage) -> SyncEnqueuer:
 def app(db, storage, mailer, enqueuer):
     """Приложение всегда работает через тестовую сессию с откатом — никогда через dev-БД."""
     from app.api.admin import get_reference_enqueuer
+    from app.api.assessment import get_db_factory
+    from app.assessment.runner import run_items
     from app.pipeline import references
     from app.pipeline.passport import run_extraction
+    from app.services.assessment import get_assessment_enqueuer
     from app.services.documents import get_enqueuer
     from app.services.passport import get_passport_enqueuer
 
     class SyncPassportEnqueuer:
         def extract(self, passport_id, run_id):
             run_extraction(db, passport_id, run_id)
+
+    def db_factory():
+        return nullcontext(db)  # одна тестовая сессия; пункты выполняются последовательно
+
+    class SyncAssessmentEnqueuer:
+        def run(self, run_id, only=None):
+            run_items(db_factory, run_id, only, concurrency=1)
 
     class SyncReferenceEnqueuer:
         def ingest(self, ref_id):
@@ -230,6 +263,8 @@ def app(db, storage, mailer, enqueuer):
     app.dependency_overrides[get_enqueuer] = lambda: enqueuer
     app.dependency_overrides[get_reference_enqueuer] = lambda: SyncReferenceEnqueuer()
     app.dependency_overrides[get_passport_enqueuer] = lambda: SyncPassportEnqueuer()
+    app.dependency_overrides[get_assessment_enqueuer] = lambda: SyncAssessmentEnqueuer()
+    app.dependency_overrides[get_db_factory] = lambda: db_factory
     return app
 
 

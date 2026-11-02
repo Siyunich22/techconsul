@@ -299,3 +299,88 @@ export interface PassportLayoutSection {
   fields: { key: string; title: string }[];
   tables: { key: string; title: string; columns: { key: string; title: string }[] }[];
 }
+
+// --- оценка (фаза 5) ---
+
+export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+export type ItemStatus = "pending" | "running" | "done" | "failed";
+export type DisclosureStatus = "full" | "partial" | "not_disclosed" | "not_applicable";
+
+export interface AssessmentRun {
+  id: string;
+  status: RunStatus;
+  items_total: number;
+  items_done: number;
+  items_failed: number;
+  cost_usd: string;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  web_search: boolean;
+}
+
+export interface AssessmentItem {
+  item_id: string;
+  title: string;
+  section_id: string;
+  section_title: string;
+  kind: string | null;
+  status: ItemStatus;
+  version: number;
+  disclosure_status: DisclosureStatus | null;
+  summary: string | null;
+  error: string | null;
+  review_status: string;
+  instruction: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface Assessment {
+  run: AssessmentRun | null;
+  items: AssessmentItem[];
+}
+
+export interface AssessmentEstimate {
+  items_ai: number;
+  items_info: number;
+  cost_usd_min: string;
+  cost_usd_max: string;
+  minutes: number;
+  passport_confirmed: boolean;
+  web_search: boolean;
+  warnings: string[];
+}
+
+export interface SectionPayload {
+  item_id: string;
+  disclosure_status: DisclosureStatus;
+  summary: string;
+  analysis_md: string;
+  tables: { title: string; columns: string[]; rows: string[][] }[];
+  findings: { text: string; source_ids: string[] }[];
+  remarks: string[];
+  recommendations: string[];
+  assumptions: string[];
+  gap: { reason: string; impact_on_conclusions: string; assumptions: string; recommendation: string } | null;
+  confidence: number;
+}
+
+export interface AssessmentSource {
+  sid: string;
+  type: "doc" | "reference" | "web" | "project";
+  document_id: string | null;
+  filename: string | null;
+  page: number | null;
+  sheet: string | null;
+  cell_range: string | null;
+  url: string | null;
+  title: string;
+  accessed_at: string | null;
+}
+
+export interface AssessmentItemDetail extends AssessmentItem {
+  payload: SectionPayload | null;
+  sources: AssessmentSource[];
+  warnings: string[];
+}

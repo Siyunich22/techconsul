@@ -159,3 +159,69 @@ def test_truncated_answer_is_output_error():
     llm, _, _ = _llm([_response(None, stop_reason="max_tokens"), _response(None, stop_reason="max_tokens")])
     with pytest.raises(LLMOutputError, match="max_tokens"):
         _call(llm)
+
+
+def _blocks_response(blocks, stop_reason):
+    usage = SimpleNamespace(
+        input_tokens=10, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0
+    )
+    return SimpleNamespace(stop_reason=stop_reason, usage=usage, _request_id="r", content=blocks)
+
+
+def _tool_call(name, input_, id_="t1"):
+    return SimpleNamespace(type="tool_use", id=id_, name=name, input=input_)
+
+
+def test_agent_loop_tools_limit_and_retry():
+    from app.llm.client import AgentTool
+
+    seen = []
+    calc = AgentTool("calc", "d", {"type": "object"}, lambda a: seen.append(a) or "4")
+    broken = AgentTool("broken", "d", {"type": "object"}, lambda a: 1 / 0)
+    messages = FakeMessages(
+        [
+            _blocks_response(
+                [_tool_call("calc", {"expression": "2+2"}), _tool_call("broken", {}, "t2")], "tool_use"
+            ),
+            _blocks_response(
+                [_tool_call("calc", {"expression": "3"}, "t3")], "tool_use"
+            ),  # лимит 2 обращения
+            _blocks_response([SimpleNamespace(type="text", text="не JSON")], "end_turn"),
+            _blocks_response([SimpleNamespace(type="text", text='{"category": "смета"}')], "end_turn"),
+        ]
+    )
+
+    @contextmanager
+    def stream(**kwargs):
+        response = messages.parse(**kwargs | {"messages": list(kwargs["messages"])})  # снимок истории
+        yield SimpleNamespace(get_final_message=lambda: response)
+
+    messages.stream = stream
+    rec = Recorder()
+    llm = AnthropicLLM(rec, client=SimpleNamespace(messages=messages))
+    answer = llm.agent(
+        ctx=CallContext(purpose="assess:3.4.1"),
+        role="analysis",
+        system="S",
+        user="U",
+        tools=[calc, broken],
+        server_tools=[{"type": "web_search_20260209", "name": "web_search"}],
+        schema=Answer,
+        max_turns=2,
+    )
+    assert answer.category == "смета" and seen == [{"expression": "2+2"}, {"expression": "3"}]
+    first, second, third, fourth = messages.requests
+    assert [t["name"] for t in first["tools"]] == [
+        "calc",
+        "broken",
+        "web_search",
+    ] and "tool_choice" not in first
+    results = second["messages"][2]["content"]
+    assert results[0] == {"type": "tool_result", "tool_use_id": "t1", "content": "4"}
+    assert (
+        results[1]["is_error"] and "ZeroDivisionError" not in results[1]["content"]
+    )  # текст ошибки, не трейс
+    assert third["tool_choice"] == {"type": "none"}  # после лимита — только итог
+    assert "Лимит обращений" in third["messages"][-1]["content"][-1]["text"]
+    assert "не прошёл проверку" in fourth["messages"][-1]["content"]
+    assert len(rec.rows) == 4  # каждый вызов учтён

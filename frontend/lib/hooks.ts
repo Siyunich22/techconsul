@@ -4,6 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { api, queryString } from "@/lib/api";
 import type {
+  Assessment,
+  AssessmentEstimate,
+  AssessmentItemDetail,
   AssignableSection,
   Completeness,
   DocumentPage,
@@ -122,4 +125,28 @@ export const usePassportLayout = () =>
     queryKey: ["passport-layout"],
     queryFn: () => api.get<PassportLayoutSection[]>("/passport/layout"),
     staleTime: Infinity,
+  });
+
+const RUN_ACTIVE = ["queued", "running"];
+
+export const useAssessment = (projectId: string) =>
+  useQuery({
+    queryKey: ["assessment", projectId],
+    queryFn: () => api.get<Assessment>(`/projects/${projectId}/assessment`),
+    // запасной опрос, если поток событий (SSE) недоступен
+    refetchInterval: (q) => (q.state.data?.run && RUN_ACTIVE.includes(q.state.data.run.status) ? 5000 : false),
+  });
+
+export const useAssessmentEstimate = (projectId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ["assessment-estimate", projectId],
+    queryFn: () => api.get<AssessmentEstimate>(`/projects/${projectId}/assessment/estimate`),
+    enabled,
+  });
+
+export const useAssessmentItem = (projectId: string, itemId: string | null, version: number | undefined) =>
+  useQuery({
+    queryKey: ["assessment-item", projectId, itemId, version],
+    queryFn: () => api.get<AssessmentItemDetail>(`/projects/${projectId}/assessment/items/${itemId}`),
+    enabled: Boolean(itemId),
   });

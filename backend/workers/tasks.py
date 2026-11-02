@@ -2,6 +2,7 @@
 
 import uuid
 
+from app.assessment.runner import run_items
 from app.core.db import get_sessionmaker
 from app.core.storage import get_storage
 from app.pipeline import passport, process, references
@@ -14,6 +15,10 @@ def enqueue_ingest(doc_id: uuid.UUID) -> None:
 
 def enqueue_index(doc_id: uuid.UUID) -> None:
     index_document_task.delay(str(doc_id))
+
+
+def enqueue_assessment(run_id: uuid.UUID, only: list[str] | None = None) -> None:
+    run_assessment_task.delay(str(run_id), only)
 
 
 def enqueue_passport(passport_id: uuid.UUID, run_id: uuid.UUID) -> None:
@@ -50,3 +55,9 @@ def ingest_reference_task(ref_id: str) -> None:
 def extract_passport_task(passport_id: str, run_id: str) -> None:
     with get_sessionmaker()() as db:
         passport.run_extraction(db, uuid.UUID(passport_id), uuid.UUID(run_id))
+
+
+@celery_app.task(name="assessment.run")
+def run_assessment_task(run_id: str, only: list[str] | None = None) -> None:
+    """Пункты прогона по зависимостям; повторный запуск задачи берёт только пункты в статусе pending."""
+    run_items(get_sessionmaker(), uuid.UUID(run_id), only)

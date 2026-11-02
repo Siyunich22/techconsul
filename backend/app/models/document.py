@@ -209,6 +209,7 @@ class LlmCall(UUIDPk, Base):
         ForeignKey("organizations.id", ondelete="CASCADE"), index=True
     )
     project_id: Mapped[uuid.UUID | None] = mapped_column(index=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(index=True)  # прогон оценки — для стоимости прогона
     purpose: Mapped[str] = mapped_column(String(100))
     model: Mapped[str] = mapped_column(String(100))
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)

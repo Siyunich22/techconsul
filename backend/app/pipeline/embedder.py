@@ -91,4 +91,5 @@ def embed_query(text: str) -> list[float]:
         return get_embedder().embed_query(text)
     from workers.tasks import embed_query_task
 
-    return embed_query_task.delay(text).get(timeout=s.query_embedding_timeout_s)
+    # из задачи Celery (анализ пунктов в воркере) — синхронное ожидание подзадачи разрешаем явно
+    return embed_query_task.delay(text).get(timeout=s.query_embedding_timeout_s, disable_sync_subtasks=False)
