@@ -38,7 +38,7 @@
 7. Администратор платформы: в сервисе `api` → **Shell** (или `railway ssh`):
    `python -m app.cli create-admin admin@example.kz '<пароль>' 'ФИО'`.
    Демо-данные (необязательно): `ADMIN_PASSWORD='<пароль>' DEMO_PASSWORD='<пароль>' python -m app.seed` — вне dev пароли по умолчанию запрещены, seed без них не запустится.
-   API не стартует при `APP_ENV` ≠ `dev`, если `JWT_SECRET` короче 32 символов или равен значению по умолчанию.
+   API не стартует при `APP_ENV` ≠ `dev`, если `JWT_SECRET` короче 32 символов или равен значению по умолчанию, если `COOKIE_SECURE` ≠ `true` или `S3_SECRET_KEY` равен значению по умолчанию (воркеры — тоже по `JWT_SECRET`/`S3_SECRET_KEY`).
 
 ## Переменные
 

@@ -5,10 +5,12 @@ from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from app.api.deps import CurrentPrincipal, DbSession, ManagerPrincipal
+from app.core.config import get_settings
 from app.core.storage import Storage, get_storage
 from app.models import DocumentPage
 from app.pipeline.index import search_project
@@ -55,10 +57,21 @@ async def put_part(
     db: DbSession,
     storage: StorageDep,
 ):
-    project = get_project(db, principal, project_id)
-    upload = svc.get_upload(db, project, upload_id)
-    data = await request.body()
-    svc.put_part(db, storage, upload, part_no, data)
+    # Тело — с ограничением и до обращения к БД; синхронные БД и S3 — в пуле потоков, не в цикле событий.
+    limit = get_settings().upload_chunk_size
+    if int(request.headers.get("content-length") or 0) > limit:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Часть больше допустимого размера")
+    buf = bytearray()
+    async for piece in request.stream():
+        buf += piece
+        if len(buf) > limit:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Часть больше допустимого размера")
+
+    def store() -> None:
+        project = get_project(db, principal, project_id)
+        svc.put_part(db, storage, svc.get_upload(db, project, upload_id), part_no, bytes(buf))
+
+    await run_in_threadpool(store)
 
 
 @router.post("/uploads/{upload_id}/complete", response_model=DocumentOut)
@@ -72,7 +85,7 @@ def complete_upload(
 ):
     project = get_project(db, principal, project_id)
     return svc.complete_upload(
-        db, storage, enqueuer, principal, project, svc.get_upload(db, project, upload_id)
+        db, storage, enqueuer, principal, project, svc.get_upload(db, project, upload_id, lock=True)
     )
 
 

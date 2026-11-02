@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { api, queryString } from "@/lib/api";
+import { ApiError, api, queryString } from "@/lib/api";
 import type {
   Assessment,
   AssessmentEstimate,
@@ -36,7 +36,13 @@ export const qk = {
   sections: (templateId: string) => ["templates", templateId, "sections"] as const,
 };
 
-export const useMe = () => useQuery({ queryKey: qk.me, queryFn: () => api.get<Me>("/me"), retry: false });
+export const useMe = () =>
+  useQuery({
+    queryKey: qk.me,
+    queryFn: () => api.get<Me>("/me"),
+    // 401 — сессии нет, повторять бессмысленно; сбой сети/5xx (например, перезапуск API) — повторяем
+    retry: (n, err) => !(err instanceof ApiError && err.status === 401) && n < 3,
+  });
 
 export const useOrg = () => useQuery({ queryKey: qk.org, queryFn: () => api.get<Org>("/org") });
 
@@ -142,6 +148,7 @@ export const useAssessmentEstimate = (projectId: string, enabled: boolean) =>
     queryKey: ["assessment-estimate", projectId],
     queryFn: () => api.get<AssessmentEstimate>(`/projects/${projectId}/assessment/estimate`),
     enabled,
+    staleTime: 0, // предусловия (паспорт, документы) меняются на других вкладках
   });
 
 export const useAssessmentItem = (projectId: string, itemId: string | null, version: number | undefined) =>

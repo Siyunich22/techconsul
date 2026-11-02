@@ -72,10 +72,11 @@ function useRunEvents(
       `${API_PREFIX}/projects/${projectId}/runs/${runId}/events`,
     );
     source.addEventListener("progress", (e) => {
-      queryClient.setQueryData(
-        ["assessment", projectId],
-        JSON.parse((e as MessageEvent).data) as Assessment,
-      );
+      const data = JSON.parse((e as MessageEvent).data) as Assessment;
+      queryClient.setQueryData(["assessment", projectId], data);
+      // последнее «progress» закрывает поток через смену runId раньше, чем придёт «end»
+      if (data.run && !ACTIVE.includes(data.run.status))
+        queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     });
     source.addEventListener("end", () => {
       source.close();
@@ -444,7 +445,8 @@ function ItemPanel({
     if (!s) return;
     if (s.type === "doc" && s.document_id)
       onOpenSource(s.document_id, s.page ?? 1);
-    else if (s.url) window.open(s.url, "_blank", "noopener,noreferrer");
+    else if (s.url && /^https?:\/\//i.test(s.url))
+      window.open(s.url, "_blank", "noopener,noreferrer");
   };
   const cite = (text: string) => (
     <Cited text={text} sources={sources} onOpen={openSource} />

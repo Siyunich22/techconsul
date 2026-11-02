@@ -1,6 +1,6 @@
 // Загрузка файла частями: init → PUT частей (S3 multipart через API) → complete.
 
-import { API_PREFIX, ApiError, api } from "@/lib/api";
+import { API_PREFIX, ApiError, api, refreshSession } from "@/lib/api";
 import type { ProjectDocument } from "@/lib/types";
 
 interface InitOut {
@@ -17,6 +17,7 @@ export interface UploadProgress {
 const PARALLEL_PARTS = 3;
 
 async function putPart(projectId: string, uploadId: string, partNo: number, blob: Blob, signal?: AbortSignal) {
+  let refreshed = false;
   for (let attempt = 0; ; attempt++) {
     const resp = await fetch(`${API_PREFIX}/projects/${projectId}/uploads/${uploadId}/parts/${partNo}`, {
       method: "PUT",
@@ -25,6 +26,12 @@ async function putPart(projectId: string, uploadId: string, partNo: number, blob
       signal,
     });
     if (resp.ok) return;
+    // доступ живёт 15 минут, а большая загрузка — дольше: обновляем сессию и повторяем часть
+    if (resp.status === 401 && !refreshed && (await refreshSession())) {
+      refreshed = true;
+      attempt--;
+      continue;
+    }
     // сетевые сбои и 5xx — до трёх повторов с паузой; 4xx — сразу ошибка
     if (resp.status < 500 || attempt >= 2) {
       const body = await resp.json().catch(() => null);

@@ -53,6 +53,7 @@ export default function OrganizationPage() {
       page_number_format: f.page_number_format as OrgSettings["page_number_format"],
       default_font: f.default_font,
       default_font_size: Number(f.default_font_size),
+      web_search_enabled: f.web_search_enabled === "on",
     };
     save.mutate({ name: f.name, address: f.address, phone: f.phone, email: f.email, settings });
   }
@@ -117,6 +118,12 @@ export default function OrganizationPage() {
                   max={16}
                   defaultValue={o.settings.default_font_size}
                 />
+              </Field>
+              <Field label={t("webSearch")} hint={t("webSearchHint")} className="sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" name="web_search_enabled" defaultChecked={o.settings.web_search_enabled} />
+                  {t("webSearch")}
+                </label>
               </Field>
             </fieldset>
             {canManage && (

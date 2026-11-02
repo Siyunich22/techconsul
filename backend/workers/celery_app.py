@@ -17,6 +17,15 @@ celery_app.conf.update(
     timezone="Asia/Almaty",
     enable_utc=True,
     task_default_queue="default",
+    # Redis возвращает неподтверждённую задачу (acks_late) другому воркеру через visibility_timeout
+    # (по умолчанию 1 ч) — меньше прогона оценки, задача выполнялась бы дважды. Берём с запасом больше
+    # самого длинного лимита времени задачи.
+    broker_transport_options={"visibility_timeout": 6 * 3600},
+    result_backend_transport_options={"visibility_timeout": 6 * 3600},
+    # Лимиты времени: зависшая задача не держит слот воркера вечно. Мягкий — исключение в задаче
+    # (оркестратор помечает прогон прерванным), жёсткий — завершение процесса.
+    task_soft_time_limit=2 * 3600,
+    task_time_limit=2 * 3600 + 300,
     # ingest (разбор, OCR, LibreOffice) — параллельно; index (модель эмбеддингов в памяти) — отдельный воркер
     task_routes={
         "documents.ingest": {"queue": "ingest"},

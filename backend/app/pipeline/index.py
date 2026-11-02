@@ -142,6 +142,14 @@ ORDER BY f.score DESC LIMIT :k
 """
 
 
+def filtered_vector_scan(db: Session) -> None:
+    """HNSW-индекс общий для всех проектов: без итеративного сканирования он отдаёт ef_search ближайших
+    по всей таблице, а фильтр проекта применяется после — векторная часть поиска пустеет по мере роста
+    базы. pgvector ≥ 0.8: сканируем дальше, пока не наберётся LIMIT строк с фильтром (до конца транзакции)."""
+    db.execute(sql("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+    db.execute(sql("SET LOCAL hnsw.ef_search = 100"))
+
+
 def search_project(
     db: Session,
     *,
@@ -166,5 +174,6 @@ def search_project(
     }
     if categories:
         params["cats"] = categories
+    filtered_vector_scan(db)
     rows = db.execute(sql(_HYBRID_SQL.format(cat=cat)), params).all()
     return [SearchHit(*row) for row in rows]

@@ -116,6 +116,12 @@ class ToolContext:
     passport: dict  # снимок паспорта прогона: data, discrepancies, sources
     registry: SourceRegistry
     categories: dict[str, str]
+    # метки, выданные инструментами этому пункту: ссылаться можно только на них (и на источники зависимостей)
+    seen: set[str] = field(default_factory=set)
+
+    def cite(self, sid: str) -> str:
+        self.seen.add(sid)
+        return sid
 
 
 def build_tools(codes: list[str], ctx: ToolContext) -> list[AgentTool]:
@@ -144,7 +150,7 @@ def search_docs(ctx: ToolContext, args: dict) -> str:
         return "Ничего не найдено. Попробуй другую формулировку или убери фильтр категорий."
     blocks = []
     for h in hits:
-        sid = ctx.registry.doc(h.document_id, h.filename, h.page, h.sheet, h.cell_range)
+        sid = ctx.cite(ctx.registry.doc(h.document_id, h.filename, h.page, h.sheet, h.cell_range))
         cat = ctx.categories.get(h.category or "", h.category or "")
         blocks.append(f"[{sid}] {ctx.registry.caption(sid)} ({cat})\n{h.text[:FRAGMENT_CHARS]}")
     return "\n\n".join(blocks)
@@ -161,9 +167,9 @@ def search_refs(ctx: ToolContext, args: dict) -> str:
         return "В справочной библиотеке ничего не найдено (библиотека может быть не заполнена)."
     blocks = []
     for h in hits:
-        sid = ctx.registry.add(
-            SourceEntry("", "reference", h["title"], reference_doc_id=h["reference_doc_id"], page=h["page"])
-        )
+        ref_id, page = h["reference_doc_id"], h["page"]
+        entry = SourceEntry("", "reference", h["title"], reference_doc_id=ref_id, page=page)
+        sid = ctx.cite(ctx.registry.add(entry))
         blocks.append(f"[{sid}] {ctx.registry.caption(sid)}\n{h['text'][:FRAGMENT_CHARS]}")
     return "\n\n".join(blocks)
 
@@ -186,9 +192,8 @@ def passport_text(ctx: ToolContext, section: str | None) -> str:
         for label in labels:
             s = sources.get(label)
             if s:
-                sid = ctx.registry.doc(
-                    uuid.UUID(s["document_id"]), s["filename"], s.get("page"), s.get("sheet")
-                )
+                doc_id = uuid.UUID(s["document_id"])
+                sid = ctx.cite(ctx.registry.doc(doc_id, s["filename"], s.get("page"), s.get("sheet")))
                 out.append(f"[{sid}]")
         return " ".join(out) or "[источник не указан — введено экспертом]"
 

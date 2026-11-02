@@ -7,9 +7,7 @@ from sqlalchemy import select
 from app.core.db import get_sessionmaker
 from app.core.security import hash_password
 from app.models import Organization, User, UserRole
-from app.services.auth import get_user_by_email, normalize_email
-
-PLATFORM_BIN = "000000000000"
+from app.services.auth import PLATFORM_BIN, get_user_by_email, normalize_email
 
 
 def create_admin(email: str, password: str, full_name: str = "Администратор платформы") -> None:
@@ -19,6 +17,11 @@ def create_admin(email: str, password: str, full_name: str = "Администр
             org = Organization(name="Платформа ТехОценка", bin=PLATFORM_BIN)
             db.add(org)
             db.flush()
+        outsiders = db.scalar(
+            select(User.id).where(User.org_id == org.id, User.role != UserRole.admin).limit(1)
+        )
+        if outsiders is not None:  # организацию с БИН платформы зарегистрировал кто-то другой
+            sys.exit(f"Организация с БИН {PLATFORM_BIN} содержит не-администраторов — проверьте вручную")
         user = get_user_by_email(db, email)
         if user is None:
             user = User(org_id=org.id, email=normalize_email(email), full_name=full_name, role=UserRole.admin)

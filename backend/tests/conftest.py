@@ -16,6 +16,7 @@ from alembic import command
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.mailer import get_mailer
+from app.core.ratelimit import MemoryRateLimiter, get_rate_limiter
 from app.core.storage import StoredObject, get_storage
 from app.main import create_app
 from app.template_engine.loader import ensure_default_template
@@ -248,6 +249,8 @@ def app(db, storage, mailer, enqueuer):
     def db_factory():
         return nullcontext(db)  # одна тестовая сессия; пункты выполняются последовательно
 
+    limiter = MemoryRateLimiter()
+
     class SyncAssessmentEnqueuer:
         def run(self, run_id, only=None):
             run_items(db_factory, run_id, only, concurrency=1)
@@ -258,6 +261,7 @@ def app(db, storage, mailer, enqueuer):
 
     app = create_app(register_default_template=False)
     app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_rate_limiter] = lambda: limiter  # счётчики теста, не общий Redis
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_mailer] = lambda: mailer
     app.dependency_overrides[get_enqueuer] = lambda: enqueuer

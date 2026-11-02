@@ -1,5 +1,6 @@
 """Архивы: zip (с исправлением кириллических имён cp866), rar и 7z (unar). Защита от zip-бомб."""
 
+import json
 import subprocess
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -57,9 +58,32 @@ def parse_zip(path: Path, out_dir: Path) -> Parsed:
     return Parsed(kind="archive", children=children, meta={"entries": len(children)})
 
 
+def _check_unar_listing(path: Path) -> None:
+    """Оглавление до распаковки (lsar): ссылки запрещены, число файлов и объём — по заявленным размерам.
+
+    Проверка после распаковки опаздывает: бомба успевает заполнить диск, а ссылка «d → /» с
+    последующим «d/…» пишет за пределы каталога распаковки.
+    """
+    s = get_settings()
+    try:
+        out = subprocess.run(["lsar", "-j", str(path)], capture_output=True, timeout=300, check=True).stdout
+        entries = json.loads(out).get("lsarContents", [])
+    except FileNotFoundError as exc:
+        raise IngestError("unar не установлен") from exc
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        raise IngestError("Не удалось прочитать оглавление архива") from exc
+    if any(e.get("XADIsLink") or e.get("XADIsHardLink") for e in entries):
+        raise IngestError("Архив содержит символические ссылки — распаковка запрещена")
+    if len(entries) > s.max_archive_entries:
+        raise IngestError(f"В архиве больше {s.max_archive_entries} файлов")
+    if sum(int(e.get("XADFileSize") or 0) for e in entries) > s.max_archive_unpacked_gb * 1024**3:
+        raise IngestError(f"Распакованный размер архива больше {s.max_archive_unpacked_gb} ГБ")
+
+
 def parse_unar(path: Path, out_dir: Path) -> Parsed:
     """rar, 7z и прочие форматы через unar (свободная реализация, читает RAR)."""
     s = get_settings()
+    _check_unar_listing(path)
     dest = out_dir / "unar"
     dest.mkdir()
     try:
@@ -76,7 +100,14 @@ def parse_unar(path: Path, out_dir: Path) -> Parsed:
         if "password" in msg.lower():
             raise IngestError("Архив защищён паролем") from exc
         raise IngestError(f"Не удалось распаковать архив: {msg[:300]}") from exc
-    files = [p for p in sorted(dest.rglob("*")) if p.is_file()]
+    # Симлинки из архива (rar/7z их восстанавливают) не читаем: ссылка на /proc/self/environ или
+    # файлы воркера выдала бы секреты как «вложенный документ». Берём только обычные файлы внутри dest.
+    root = dest.resolve()
+    files = [
+        p
+        for p in sorted(dest.rglob("*"))
+        if not p.is_symlink() and p.is_file() and p.resolve().is_relative_to(root)
+    ]
     if len(files) > s.max_archive_entries:
         raise IngestError(f"В архиве больше {s.max_archive_entries} файлов")
     if sum(f.stat().st_size for f in files) > s.max_archive_unpacked_gb * 1024**3:

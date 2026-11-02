@@ -1,15 +1,18 @@
 """Единственная точка вызова Anthropic API (CLAUDE.md, правило 5).
 
-Ретраи сети/429/5xx — в SDK (max_retries). Структурированный ответ валидируется Pydantic-схемой;
+Ретраи сети/429/5xx — в SDK (max_retries); обрыв потока посреди ответа — здесь (_call).
+Структурированный ответ валидируется Pydantic-схемой;
 при невалидном ответе — один повтор с текстом ошибки в контексте, затем LLMOutputError (правило 7).
 Каждый вызов записывается в llm_calls (токены, стоимость).
 """
 
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal, Protocol
 
@@ -24,6 +27,8 @@ from app.models import LlmCall
 log = logging.getLogger(__name__)
 
 ModelRole = Literal["analysis", "extract", "cheap"]
+WEB_SEARCH_USD = Decimal("0.01")  # серверный web search: $10 за 1000 запросов, сверх токенов
+STREAM_RETRY_DELAYS_S = (5, 20)  # обрыв потока (overloaded посреди ответа) — SDK такой не повторяет
 
 
 class LLMError(Exception):
@@ -194,7 +199,10 @@ class AnthropicLLM:
             extra: dict = {"tools": definitions} if definitions else {}
             if definitions and (turns >= max_turns or retried):
                 extra["tool_choice"] = {"type": "none"}
-            response = self._call(ctx, model, system, messages, None, max_tokens, **extra)
+            # история растёт с каждым ходом: кэш-точка на её конце, иначе каждый ход оплачивается целиком
+            response = self._call(
+                ctx, model, system, _with_cache_breakpoint(messages), None, max_tokens, **extra
+            )
             if response.stop_reason == "refusal":
                 raise LLMRefusal(f"Модель отказалась отвечать ({ctx.purpose})")
             messages.append({"role": "assistant", "content": response.content})
@@ -213,6 +221,8 @@ class AnthropicLLM:
                 messages.append({"role": "user", "content": results})
                 continue
             if response.stop_reason == "max_tokens":
+                # обрезанный ход может кончаться незавершённым tool_use — в истории он даст ошибку 400
+                messages.pop()
                 error: Exception = LLMOutputError(f"Ответ обрезан лимитом max_tokens={max_tokens}")
             else:
                 try:
@@ -223,12 +233,10 @@ class AnthropicLLM:
             if retried:
                 raise LLMOutputError(str(error))
             retried = True
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"Итог не прошёл проверку схемы: {str(error)[:2000]}. "
-                    "Повтори итоговый ответ строго по схеме, без вызова инструментов.",
-                }
+            _append_user(
+                messages,
+                f"Итог не прошёл проверку схемы: {str(error)[:2000]}. "
+                "Повтори итоговый ответ строго по схеме, без вызова инструментов.",
             )
 
     def _call(self, ctx, model, system, messages, schema, max_tokens, **extra):
@@ -239,23 +247,31 @@ class AnthropicLLM:
             "messages": messages,
             **extra,
         }
-        try:
-            if schema is None:
-                # длинные ответы (сведение паспорта) — потоком: без него SDK ограничивает max_tokens таймаутом
-                with self.client.messages.stream(**params) as stream:
-                    response = stream.get_final_message()
-            else:
-                response = self.client.messages.parse(**params, output_format=schema)
-        except anthropic.APIConnectionError as exc:
-            self._record(ctx, model, None, status="error", error=str(exc))
-            raise LLMUnavailable(str(exc)) from exc
-        except anthropic.APIStatusError as exc:
-            self._record(ctx, model, None, status="error", error=f"{exc.status_code}: {exc.message}")
-            if exc.status_code >= 500 or exc.status_code in (401, 403, 429):
+        for attempt in range(len(STREAM_RETRY_DELAYS_S) + 1):
+            try:
+                if schema is None:
+                    # длинные ответы (сведение паспорта) — потоком: без него SDK ограничивает max_tokens
+                    with self.client.messages.stream(**params) as stream:
+                        response = stream.get_final_message()
+                else:
+                    response = self.client.messages.parse(**params, output_format=schema)
+            except anthropic.APIConnectionError as exc:
+                self._record(ctx, model, None, status="error", error=str(exc))
+                if attempt < len(STREAM_RETRY_DELAYS_S):
+                    time.sleep(STREAM_RETRY_DELAYS_S[attempt])
+                    continue
                 raise LLMUnavailable(str(exc)) from exc
-            raise LLMError(str(exc)) from exc
-        self._record(ctx, model, response)
-        return response
+            except anthropic.APIStatusError as exc:
+                self._record(ctx, model, None, status="error", error=f"{exc.status_code}: {exc.message}")
+                if _transient(exc) and attempt < len(STREAM_RETRY_DELAYS_S):
+                    time.sleep(STREAM_RETRY_DELAYS_S[attempt])
+                    continue
+                if exc.status_code >= 500 or exc.status_code in (401, 403, 429) or _transient(exc):
+                    raise LLMUnavailable(str(exc)) from exc
+                raise LLMError(str(exc)) from exc
+            self._record(ctx, model, response)
+            return response
+        raise AssertionError("unreachable")
 
     def _record(
         self, ctx: CallContext, model: str, response, *, status: str = "ok", error: str | None = None
@@ -267,14 +283,20 @@ class AnthropicLLM:
             "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
             "cache_write": getattr(usage, "cache_creation_input_tokens", 0) or 0,
         }
+        server = getattr(usage, "server_tool_use", None)
+        searches = getattr(server, "web_search_requests", 0) or 0
+        if not isinstance(searches, int):
+            searches = 0
         try:
             with self._db_factory() as db:
-                _store_call(db, ctx, model, tokens, status, error, getattr(response, "_request_id", None))
+                _store_call(
+                    db, ctx, model, tokens, status, error, getattr(response, "_request_id", None), searches
+                )
         except Exception:  # учёт не должен ронять основной вызов
             log.exception("Не удалось записать учёт вызова LLM")
 
 
-def _store_call(db: Session, ctx, model, tokens, status, error, request_id) -> None:
+def _store_call(db: Session, ctx, model, tokens, status, error, request_id, searches: int = 0) -> None:
     db.add(
         LlmCall(
             org_id=ctx.org_id,
@@ -286,7 +308,7 @@ def _store_call(db: Session, ctx, model, tokens, status, error, request_id) -> N
             output_tokens=tokens["output_tokens"],
             cache_read_tokens=tokens["cache_read"],
             cache_write_tokens=tokens["cache_write"],
-            cost_usd=cost_usd(model, **tokens),
+            cost_usd=cost_usd(model, **tokens) + WEB_SEARCH_USD * searches,
             status=status,
             error=error,
             request_id=request_id,
@@ -314,11 +336,68 @@ def _json_instruction(schema: type[BaseModel]) -> str:
 
 
 def _parse_json[T: BaseModel](text: str, schema: type[T]) -> T:
-    """JSON-объект из текста ответа (допускаем обёртку ```json и поясняющий текст вокруг)."""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end < start:
+    """JSON-объект из текста ответа (допускаем обёртку markdown и поясняющий текст вокруг).
+
+    Агент до итога может писать пояснения с фигурными скобками: берём все полные JSON-объекты
+    текста и возвращаем последний, прошедший схему (итог — в конце)."""
+    decoder = json.JSONDecoder()
+    candidates: list[dict] = []
+    i = text.find("{")
+    while i >= 0:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(obj, dict):
+            candidates.append(obj)
+        i = text.find("{", end)
+    if not candidates:
         raise LLMOutputError("В ответе нет JSON-объекта")
-    return schema.model_validate_json(text[start : end + 1])
+    error: ValidationError | None = None
+    for obj in reversed(candidates):
+        try:
+            return schema.model_validate(obj)
+        except ValidationError as exc:
+            error = error or exc
+    raise error  # type: ignore[misc]
+
+
+def _transient(exc: anthropic.APIStatusError) -> bool:
+    """Перегрузка/внутренняя ошибка — в т.ч. событие error посреди потока (статус ответа там 200)."""
+    if exc.status_code in (429, 500, 502, 503, 504, 529):
+        return True
+    body = exc.body if isinstance(exc.body, dict) else {}
+    err = body.get("error")
+    kind = err.get("type") if isinstance(err, dict) else body.get("type")
+    return kind in ("overloaded_error", "api_error", "rate_limit_error")
+
+
+def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Копия истории с cache_control на последнем блоке последнего сообщения пользователя. Историю не
+    меняем: старые точки накапливались бы сверх лимита API (4 на запрос)."""
+    if not messages or messages[-1]["role"] != "user":
+        return messages
+    last = messages[-1]
+    content = last["content"]
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    if not blocks or not isinstance(blocks[-1], dict):
+        return messages
+    blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+    return [*messages[:-1], {**last, "content": blocks}]
+
+
+def _append_user(messages: list[dict], text: str) -> None:
+    """Текст пользователю: к последнему сообщению пользователя (после снятого обрезанного хода),
+    иначе — новым сообщением; два сообщения пользователя подряд не отправляем."""
+    if messages and messages[-1]["role"] == "user":
+        content = messages[-1]["content"]
+        if isinstance(content, str):
+            messages[-1] = {"role": "user", "content": f"{content}\n\n{text}"}
+        else:
+            messages[-1] = {"role": "user", "content": [*content, {"type": "text", "text": text}]}
+        return
+    messages.append({"role": "user", "content": text})
 
 
 def _text(response) -> str:

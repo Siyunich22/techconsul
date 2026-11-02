@@ -8,21 +8,24 @@ from functools import lru_cache
 from typing import Protocol
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import Principal
-from app.assessment.runner import plan_items, run_cost
+from app.assessment.runner import lock_key, plan_items, run_cost
 from app.core.config import get_settings
 from app.models import (
     AssessmentRun,
     Document,
     DocumentStatus,
+    Expert,
     ItemStatus,
     Organization,
     Passport,
     PassportStatus,
     Project,
+    ProjectMember,
     RunStatus,
     SectionResult,
     Source,
@@ -66,9 +69,15 @@ def _now() -> datetime:
 
 
 def _plan(project: Project):
-    return plan_items(
-        parse_template(project.template_version.yaml_text), list(project.enabled_optional_items)
-    )
+    version = project.template_version
+    return _plan_cached(version.id, tuple(project.enabled_optional_items), version.yaml_text)
+
+
+@lru_cache(maxsize=64)
+def _plan_cached(version_id: uuid.UUID, optional: tuple[str, ...], yaml_text: str):
+    """План пунктов по версии шаблона: SSE опрашивает прогресс каждые 2 с, YAML не разбираем заново.
+    Версия шаблона неизменяема; текст в ключе — страховка от правки в тестах."""
+    return tuple(plan_items(parse_template(yaml_text), list(optional)))
 
 
 def latest_run(db: Session, project: Project) -> AssessmentRun | None:
@@ -91,9 +100,13 @@ def _web_allowed(db: Session, project: Project) -> bool:
     return bool((org.settings_json or {}).get("web_search_enabled", True)) if org else False
 
 
-def _is_active(run: AssessmentRun) -> bool:
+def _is_active(db: Session, run: AssessmentRun) -> bool:
+    """Прогон жив, если им занят воркер (держит advisory-блокировку прогона) либо он недавно поставлен
+    в очередь. «running» без блокировки — след упавшего воркера."""
     if run.status not in (RunStatus.queued, RunStatus.running):
         return False
+    if not db.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": lock_key(run.id)}):
+        return True  # блокировка у воркера; наша xact-блокировка снимется с концом транзакции
     started = run.started_at or run.created_at
     return _now() - started < timedelta(minutes=get_settings().analysis_stale_after_min)
 
@@ -141,13 +154,15 @@ def start_run(
 ) -> AssessmentRun:
     if not principal.can_manage:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Запускать оценку может руководитель проекта")
+    # блокировка строки проекта: два одновременных запуска не создают два прогона
+    db.scalar(select(Project.id).where(Project.id == project.id).with_for_update())
     passport = _passport(db, project)
     if passport is None or passport.status != PassportStatus.confirmed:
         raise HTTPException(status.HTTP_409_CONFLICT, "Сначала подтвердите паспорт проекта")
     if _docs_processing(db, project):
         raise HTTPException(status.HTTP_409_CONFLICT, "Дождитесь окончания обработки документов")
     previous = latest_run(db, project)
-    if previous is not None and _is_active(previous):
+    if previous is not None and _is_active(db, previous):
         raise HTTPException(status.HTTP_409_CONFLICT, "Оценка уже выполняется")
     if previous is not None and previous.status in (RunStatus.queued, RunStatus.running):
         previous.status, previous.error = RunStatus.failed, "Прогон прерван (воркер не отвечал)"
@@ -205,6 +220,10 @@ def rerun_item(
 ) -> SectionResult:
     if not principal.can_manage and principal.role.value != "expert":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав")
+    if not principal.can_manage and not _expert_assigned(db, principal, project, item_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Пункт не входит в разделы, назначенные эксперту")
+    # версии пункта — по очереди
+    db.scalar(select(Project.id).where(Project.id == project.id).with_for_update())
     run = latest_run(db, project)
     if run is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Оценка ещё не запускалась")
@@ -235,10 +254,33 @@ def rerun_item(
         version=row.version,
         instruction=row.instruction,
     )
-    db.commit()
-    enqueuer.run(run.id, [item_id])
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "Пункт уже пересобирается") from exc
+    # Без `only`: если прогоном занят воркер, он сам подберёт новый pending-пункт после текущей партии.
+    enqueuer.run(run.id)
     db.refresh(row)
     return row
+
+
+def _expert_assigned(db: Session, principal: Principal, project: Project, item_id: str) -> bool:
+    """Эксперт пересобирает пункты своих разделов (assigned_items); руководитель команды — любые."""
+    member = db.scalar(
+        select(ProjectMember)
+        .join(Expert, Expert.id == ProjectMember.expert_id)
+        .where(
+            ProjectMember.project_id == project.id,
+            Expert.org_id == project.org_id,
+            Expert.user_id == principal.user_id,
+        )
+    )
+    if member is None:
+        return False
+    if member.role.value == "lead":
+        return True
+    return any(item_id == a or item_id.startswith(a + ".") for a in member.assigned_items)
 
 
 def run_out(db: Session, run: AssessmentRun) -> RunOut:
@@ -315,7 +357,8 @@ def item_detail(db: Session, project: Project, item_id: str) -> ItemDetailOut:
             d.id: d.filename
             for d in db.scalars(
                 select(Document).where(
-                    Document.id.in_([s.document_id for s in found.values() if s.document_id])
+                    Document.org_id == run.org_id,
+                    Document.id.in_([s.document_id for s in found.values() if s.document_id]),
                 )
             )
         }

@@ -258,6 +258,9 @@ def extract(
             except LLMError as exc:
                 log.warning("Паспорт: часть %d не извлечена: %s", i + 1, exc)
                 warnings.append(f"Часть {i + 1} из {len(batches)} не извлечена: {exc}")
+            except Exception as exc:  # обрыв потока, сетевой сбой SDK — сбой части, не всего извлечения
+                log.exception("Паспорт: часть %d — непредвиденная ошибка", i + 1)
+                warnings.append(f"Часть {i + 1} из {len(batches)} не извлечена: {type(exc).__name__}")
             progress("map", done, len(batches))
 
     partials = [p for p in partials if not is_empty(p)]
@@ -357,12 +360,19 @@ def run_extraction(db: Session, passport_id: uuid.UUID, run_id: uuid.UUID, llm: 
             llm=llm,
             progress=progress,
         )
-    except PassportExtractionError as exc:
+    except BaseException as exc:  # любой сбой (и лимит времени задачи) — «Ошибка», не вечное извлечение
+        if not isinstance(exc, PassportExtractionError):
+            log.exception("Паспорт %s: извлечение прервано", passport_id)
+        db.rollback()
         db.refresh(passport)
-        if passport.run_id == run_id:
-            passport.status, passport.error = PassportStatus.failed, str(exc)
+        if passport.run_id == run_id and passport.status == PassportStatus.extracting:
+            known = isinstance(exc, PassportExtractionError)
+            reason = str(exc) if known else f"Сбой извлечения: {type(exc).__name__}"
+            passport.status, passport.error = PassportStatus.failed, reason
             db.commit()
-        return
+        if isinstance(exc, Exception):
+            return
+        raise  # KeyboardInterrupt/SystemExit — дальше
 
     db.refresh(passport)
     if passport.run_id != run_id:  # пока шло извлечение, запустили новое

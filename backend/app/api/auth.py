@@ -5,6 +5,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
 from app.api.deps import CurrentPrincipal, DbSession
 from app.core.mailer import Mailer, get_mailer
+from app.core.ratelimit import RateLimiter, enforce, get_rate_limiter
 from app.core.security import REFRESH_COOKIE, hash_password, verify_password
 from app.schemas.auth import (
     AcceptInviteIn,
@@ -25,6 +26,12 @@ me_router = APIRouter(prefix="/me", tags=["me"])
 
 RefreshCookie = Annotated[str | None, Cookie(alias=REFRESH_COOKIE)]
 MailerDep = Annotated[Mailer, Depends(get_mailer)]
+LimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+WINDOW_S = 15 * 60
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 def _ua(request: Request) -> str:
@@ -32,7 +39,8 @@ def _ua(request: Request) -> str:
 
 
 @router.post("/register", response_model=MeOut, status_code=status.HTTP_201_CREATED)
-def register(data: RegisterIn, db: DbSession, request: Request, response: Response):
+def register(data: RegisterIn, db: DbSession, request: Request, response: Response, limiter: LimiterDep):
+    enforce(limiter, f"register:{_ip(request)}", 20, 3600)
     user = svc.register(db, data)
     svc.issue_session(db, user, response, _ua(request))
     db.commit()
@@ -40,10 +48,15 @@ def register(data: RegisterIn, db: DbSession, request: Request, response: Respon
 
 
 @router.post("/login", response_model=MeOut)
-def login(data: LoginIn, db: DbSession, request: Request, response: Response):
+def login(data: LoginIn, db: DbSession, request: Request, response: Response, limiter: LimiterDep):
+    # перебор пароля одной учётной записи и подбор по многим учётным записям с одного адреса
+    account_key = f"login:{svc.normalize_email(data.email)}"
+    enforce(limiter, account_key, 10, WINDOW_S)
+    enforce(limiter, f"login-ip:{_ip(request)}", 100, WINDOW_S)
     user = svc.authenticate(db, data.email, data.password)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Неверный email или пароль")
+    limiter.reset(account_key)
     user.last_login_at = datetime.now(UTC)
     svc.issue_session(db, user, response, _ua(request))
     audit(db, "auth.login", org_id=user.org_id, user_id=user.id)
@@ -65,12 +78,16 @@ def logout(db: DbSession, response: Response, token: RefreshCookie = None):
 
 
 @router.post("/forgot", status_code=status.HTTP_204_NO_CONTENT)
-def forgot(data: ForgotIn, db: DbSession, mailer: MailerDep):
+def forgot(data: ForgotIn, db: DbSession, mailer: MailerDep, request: Request, limiter: LimiterDep):
+    # без лимита адрес можно было бы засыпать письмами сброса
+    enforce(limiter, f"forgot:{svc.normalize_email(data.email)}", 5, 3600)
+    enforce(limiter, f"forgot-ip:{_ip(request)}", 30, 3600)
     svc.request_password_reset(db, mailer, data.email)
 
 
 @router.post("/reset", status_code=status.HTTP_204_NO_CONTENT)
-def reset(data: ResetIn, db: DbSession):
+def reset(data: ResetIn, db: DbSession, request: Request, limiter: LimiterDep):
+    enforce(limiter, f"token:{_ip(request)}", 30, WINDOW_S)
     svc.reset_password(db, data.token, data.password)
     db.commit()
 
@@ -87,7 +104,10 @@ def get_invitation(token: str, db: DbSession):
 
 
 @router.post("/invitations/accept", response_model=MeOut)
-def accept_invitation(data: AcceptInviteIn, db: DbSession, request: Request, response: Response):
+def accept_invitation(
+    data: AcceptInviteIn, db: DbSession, request: Request, response: Response, limiter: LimiterDep
+):
+    enforce(limiter, f"token:{_ip(request)}", 30, WINDOW_S)
     user = svc.accept_invitation(db, data.token, data.password, data.full_name)
     svc.issue_session(db, user, response, _ua(request))
     db.commit()
@@ -110,10 +130,15 @@ def patch_me(data: MePatch, principal: CurrentPrincipal, db: DbSession):
 
 
 @me_router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
-def change_password(data: ChangePasswordIn, principal: CurrentPrincipal, db: DbSession):
+def change_password(
+    data: ChangePasswordIn, principal: CurrentPrincipal, db: DbSession, request: Request, response: Response
+):
     user = principal.user
     if not verify_password(data.current_password, user.password_hash):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Текущий пароль указан неверно")
     user.password_hash = hash_password(data.new_password)
+    # украденная сессия не переживает смену пароля; текущему устройству — новая сессия
+    svc.revoke_all_sessions(db, user.id)
+    svc.issue_session(db, user, response, _ua(request))
     audit(db, "user.password_changed", org_id=user.org_id, user_id=user.id)
     db.commit()

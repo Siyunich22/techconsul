@@ -8,7 +8,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { useMe } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
@@ -20,8 +20,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const me = useMe();
 
   useEffect(() => {
-    if (me.isError) router.replace("/login");
-  }, [me.isError, router]);
+    // на страницу входа — только когда сессии нет; временный сбой API не выкидывает пользователя
+    if (me.error instanceof ApiError && me.error.status === 401) router.replace("/login");
+  }, [me.error, router]);
 
   const logout = useMutation({
     mutationFn: () => api.post("/auth/logout"),

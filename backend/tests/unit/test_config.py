@@ -33,4 +33,8 @@ def test_weak_jwt_secret_rejected_outside_dev(monkeypatch):
     with pytest.raises(ValueError, match="JWT_SECRET"):
         Settings(_env_file=None)
     monkeypatch.setenv("JWT_SECRET", "x" * 40)
+    monkeypatch.delenv("S3_SECRET_KEY", raising=False)
+    with pytest.raises(ValueError, match="S3_SECRET_KEY"):  # ключ MinIO по умолчанию — только в dev
+        Settings(_env_file=None)
+    monkeypatch.setenv("S3_SECRET_KEY", "s" * 40)
     assert Settings(_env_file=None).app_env == "staging"

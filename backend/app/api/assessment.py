@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -54,15 +55,23 @@ async def run_events(
     project = get_project(db, principal, project_id)
     svc.get_run(db, project, run_id)  # проверка доступа до начала потока
     project_id_, org_id = project.id, project.org_id
+    # Сессия запроса закрывается только после ответа, а поток живёт весь прогон: завершаем её транзакцию,
+    # соединение возвращается в пул. Дальше каждый опрос — своя короткая сессия в пуле потоков.
+    db.commit()
+
+    def poll() -> AssessmentOut | None:
+        with factory() as s:
+            p = s.get(Project, project_id_)
+            if p is None or p.org_id != org_id:
+                return None
+            return svc.assessment(s, p)
 
     async def events():
         last = None
         while True:
-            with factory() as s:
-                p = s.get(Project, project_id_)
-                if p is None or p.org_id != org_id:
-                    return
-                state = svc.assessment(s, p)
+            state = await run_in_threadpool(poll)
+            if state is None:
+                return
             payload = state.model_dump_json()
             if payload != last:
                 last = payload

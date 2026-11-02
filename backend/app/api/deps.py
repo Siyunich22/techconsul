@@ -58,3 +58,13 @@ def require_manager(principal: CurrentPrincipal) -> Principal:
 
 
 ManagerPrincipal = Annotated[Principal, Depends(require_manager)]
+
+
+def require_staff(principal: CurrentPrincipal) -> Principal:
+    """Сотрудники организации (не наблюдатели банка/Заказчика): реестр экспертов, резюме, reference.docx."""
+    if principal.role == UserRole.observer:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав")
+    return principal
+
+
+StaffPrincipal = Annotated[Principal, Depends(require_staff)]

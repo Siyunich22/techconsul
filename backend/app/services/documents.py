@@ -2,12 +2,12 @@ import math
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Protocol
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import Principal
@@ -100,10 +100,9 @@ def init_upload(
     return upload
 
 
-def get_upload(db: Session, project: Project, upload_id: uuid.UUID) -> UploadSession:
-    upload = db.scalar(
-        select(UploadSession).where(UploadSession.id == upload_id, UploadSession.project_id == project.id)
-    )
+def get_upload(db: Session, project: Project, upload_id: uuid.UUID, *, lock: bool = False) -> UploadSession:
+    query = select(UploadSession).where(UploadSession.id == upload_id, UploadSession.project_id == project.id)
+    upload = db.scalar(query.with_for_update() if lock else query)
     if upload is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Загрузка не найдена")
     if upload.completed_at is not None:
@@ -125,7 +124,12 @@ def put_part(db: Session, storage: Storage, upload: UploadSession, part_no: int,
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Размер части {len(data)} ≠ ожидаемому {expected}"
         )
     etag = storage.upload_part(upload.file_key, upload.s3_upload_id, part_no, data)
-    upload.parts_json = {**upload.parts_json, str(part_no): etag}
+    # Части грузятся параллельно: атомарное слияние в JSONB, иначе последняя запись затирает соседние.
+    db.execute(
+        update(UploadSession)
+        .where(UploadSession.id == upload.id)
+        .values(parts_json=UploadSession.parts_json.op("||")(func.jsonb_build_object(str(part_no), etag)))
+    )
     db.commit()
 
 
@@ -257,10 +261,22 @@ def delete_document(db: Session, principal: Principal, project: Project, doc: Do
     db.commit()
 
 
+INGEST_STALE_AFTER = timedelta(hours=3)  # больше лимита времени задачи documents.ingest
+
+
+def _stale(doc: Document) -> bool:
+    """«processing» дольше лимита времени задачи — воркер погиб, документ можно переобработать."""
+    started = (doc.meta_json or {}).get("ingest_started_at")
+    try:
+        return started is not None and _now() - datetime.fromisoformat(started) > INGEST_STALE_AFTER
+    except ValueError:
+        return True
+
+
 def reprocess(
     db: Session, enqueuer: Enqueuer, principal: Principal, project: Project, doc: Document
 ) -> Document:
-    if doc.status in (DocumentStatus.uploaded, DocumentStatus.processing):
+    if doc.status == DocumentStatus.uploaded or (doc.status == DocumentStatus.processing and not _stale(doc)):
         raise HTTPException(status.HTTP_409_CONFLICT, "Документ уже обрабатывается")
     if doc.status == DocumentStatus.extracted:
         raise HTTPException(

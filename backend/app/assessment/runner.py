@@ -11,11 +11,11 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.assessment.tools import SourceEntry, SourceRegistry, ToolContext, build_tools
@@ -186,7 +186,12 @@ def server_tools(item: PlanItem, web_allowed: bool) -> list[dict]:
     s = get_settings()
     return [
         {"type": "web_search_20260209", "name": "web_search", "max_uses": s.analysis_web_search_max_uses},
-        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": s.analysis_web_fetch_max_uses},
+        {
+            "type": "web_fetch_20260209",
+            "name": "web_fetch",
+            "max_uses": s.analysis_web_fetch_max_uses,
+            "max_content_tokens": s.analysis_web_fetch_max_content_tokens,
+        },
     ]
 
 
@@ -209,25 +214,36 @@ def run_agent(ctx: ItemContext) -> ItemOutcome:
         max_turns=s.analysis_max_tool_turns,
         max_tokens=s.analysis_max_tokens,
     )
-    payload, warnings = finalize(payload, ctx.item, ctx.registry)
+    allowed = set(ctx.tools.seen)
+    for dep in ctx.deps.values():
+        if dep is not None:
+            allowed |= {s.id for s in dep.sources} | {x for f in dep.findings for x in f.source_ids}
+    payload, warnings = finalize(payload, ctx.item, ctx.registry, allowed)
     return ItemOutcome(payload, ResultAuthor.ai, warnings)
 
 
+_URL = re.compile(r"^https?://", re.IGNORECASE)
+
+
 def finalize(
-    payload: SectionPayload, item: PlanItem, registry: SourceRegistry
+    payload: SectionPayload, item: PlanItem, registry: SourceRegistry, allowed: set[str] | None = None
 ) -> tuple[SectionPayload, list[str]]:
-    """Веб-источники W1… → S-метки с датой обращения; ссылки на несуществующие метки удаляются
-    с предупреждением; повторная проверка правила 2."""
+    """Веб-источники W1… → S-метки с датой обращения; ссылки на метки, которые пункт не получал от
+    инструментов (и которых нет у его зависимостей), удаляются с предупреждением; повторная проверка
+    правила 2. allowed=None — допустим весь реестр прогона."""
     warnings: list[str] = []
     mapping: dict[str, str] = {}
     for s in payload.sources:
-        if s.type == "web" or s.id.startswith("W"):
-            if not s.url:
-                warnings.append(f"Веб-источник {s.id} без URL — исключён")
+        if s.id.startswith("W"):
+            if not s.url or not _URL.match(s.url):
+                warnings.append(f"Веб-источник {s.id} без http(s)-адреса — исключён")
                 continue
             mapping[s.id] = registry.add(
                 SourceEntry("", "web", s.title or s.url, url=s.url, accessed_at=_now())
             )
+    known = (set(registry.entries) if allowed is None else allowed & set(registry.entries)) | set(
+        mapping.values()
+    )
 
     def remap(sid: str) -> str:
         return mapping.get(sid, sid)
@@ -235,15 +251,19 @@ def finalize(
     text = re.sub(r"\[([WS]\d+)\]", lambda m: f"[{remap(m.group(1))}]", payload.analysis_md)
     findings = [Finding(text=f.text, source_ids=[remap(x) for x in f.source_ids]) for f in payload.findings]
     listed = {remap(s.id) for s in payload.sources if s.id in mapping or s.id.startswith("S")}
-    cited = set(SOURCE_REF.findall(text)) | {x for f in findings for x in f.source_ids}
-    unknown = sorted((cited | listed) - set(registry.entries))
+    cited = (
+        set(SOURCE_REF.findall(text))
+        | set(re.findall(r"\[(W\d+)\]", text))
+        | {x for f in findings for x in f.source_ids}
+    )
+    unknown = sorted((cited | listed) - known)
     if unknown:
-        warnings.append(f"Ссылки на несуществующие источники удалены: {', '.join(unknown)}")
-        text = re.sub(r"\s?\[(S\d+)\]", lambda m: "" if m.group(1) in unknown else m.group(0), text)
+        warnings.append(f"Ссылки на источники, не полученные пунктом, удалены: {', '.join(unknown)}")
+        text = re.sub(r"\s?\[([SW]\d+)\]", lambda m: "" if m.group(1) in unknown else m.group(0), text)
         findings = [
             Finding(text=f.text, source_ids=[x for x in f.source_ids if x not in unknown]) for f in findings
         ]
-    used = sorted(((cited | listed) - set(unknown)), key=lambda x: int(x[1:]))
+    used = sorted((cited | listed) - set(unknown), key=lambda x: int(x[1:]))
     sources = [_source_ref(registry, sid) for sid in used]
     data = payload.model_dump()
     data.update(item_id=item.id, analysis_md=text, findings=[f.model_dump() for f in findings])
@@ -522,6 +542,40 @@ def execute(ctx: ItemContext, db_factory: DbFactory) -> ItemOutcome:
         return ItemOutcome(None, error=f"{type(exc).__name__}: {exc}"[:2000])
 
 
+def lock_key(run_id: uuid.UUID) -> int:
+    return run_id.int % (1 << 63)  # bigint advisory-блокировки
+
+
+@contextmanager
+def _run_lock(db_factory: DbFactory, run_id: uuid.UUID):
+    """Advisory-блокировка прогона на отдельном соединении: в каждый момент прогоном занимается один
+    процесс. Это исключает двойное выполнение (повторная доставка задачи Celery, пересборка во время
+    прогона) и расхождение S-меток между процессами. Блокировка снимается и при гибели процесса
+    (соединение закрывается). Отдаёт True, если блокировка получена."""
+    with _session(db_factory) as db:
+        bind = db.get_bind()
+    engine = getattr(bind, "engine", bind)
+    with engine.connect() as conn:
+        key = lock_key(run_id)
+        got = bool(conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}).scalar())
+        conn.commit()
+        try:
+            yield got
+        finally:
+            if got:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+                conn.commit()
+
+
+def _pending_ids(db_factory: DbFactory, run_id: uuid.UUID, only: list[str] | None) -> list[str]:
+    with _session(db_factory) as db:
+        return [
+            i
+            for i, r in _latest(db, run_id).items()
+            if r.status == ItemStatus.pending and (not only or i in only)
+        ]
+
+
 def run_items(
     db_factory: DbFactory,
     run_id: uuid.UUID,
@@ -529,33 +583,57 @@ def run_items(
     llm: LLM | None = None,
     concurrency: int | None = None,
 ) -> None:
-    """Выполняет пункты прогона в статусе pending (или только `only`) по зависимостям.
+    """Выполняет пункты прогона в статусе pending (или только из `only`) по зависимостям.
 
-    concurrency=1 — последовательно в текущем потоке (тесты используют одну сессию БД)."""
+    Если прогоном уже занят другой процесс, задача завершается: новые pending-пункты (пересборка) он
+    подберёт сам после текущей партии. concurrency=1 — последовательно в текущем потоке (тесты)."""
+    while True:
+        with _run_lock(db_factory, run_id) as got:
+            if not got:
+                return
+            _drain(db_factory, run_id, only, llm, concurrency)
+        # проверка после снятия блокировки: пересборка, поставленная в конце партии, не теряется —
+        # либо её задача получит блокировку сама, либо пункт виден здесь
+        if not _pending_ids(db_factory, run_id, only):
+            return
+
+
+def _drain(
+    db_factory: DbFactory,
+    run_id: uuid.UUID,
+    only: list[str] | None,
+    llm: LLM | None,
+    concurrency: int | None,
+) -> None:
     s = get_settings()
     llm = llm or get_llm()
     concurrency = concurrency or s.analysis_concurrency
     with _session(db_factory) as db:
         run = db.get(AssessmentRun, run_id)
-        if run is None or run.status in (RunStatus.cancelled,):
-            return
+        if run is None or run.status not in (RunStatus.queued, RunStatus.running):
+            return  # отменён или прерван (новый прогон пометил его failed)
         project = db.scalar(select(Project).where(Project.id == run.project_id, Project.org_id == run.org_id))
         if project is None:
             return
         template = parse_template(project.template_version.yaml_text)
         plan = {i.id: i for i in plan_items(template, list(project.enabled_optional_items))}
         latest = _latest(db, run.id)
+        # Под блокировкой никто другой прогоном не занимается: «running» — след упавшего воркера.
+        for r in latest.values():
+            if r.status == ItemStatus.running:
+                r.status, r.started_at = ItemStatus.pending, None
         todo = [
             i
             for i in plan
             if latest.get(i) and latest[i].status == ItemStatus.pending and (not only or i in only)
         ]
-        if not todo:
-            return
-        if run.status == RunStatus.queued:
+        if run.status == RunStatus.queued and todo:
             run.status, run.started_at = RunStatus.running, _now()
             project.status = ProjectStatus.analysis
         db.commit()
+        if not todo:
+            _finish(db_factory, run_id)
+            return
         registry = _registry(db, run.id)
         done: dict[str, SectionPayload | None] = {
             i: (
@@ -584,8 +662,12 @@ def run_items(
     def ready(item_id: str) -> bool:
         return all(d in done or (d not in remaining and d not in in_flight) for d in plan[item_id].depends_on)
 
-    def start(item_id: str) -> ItemContext:
+    def start(item_id: str) -> ItemContext | None:
+        """Перевод пункта в running; None — прогон прерван (новый прогон пометил его failed)."""
         with _session(db_factory) as db:
+            run = db.get(AssessmentRun, run_id)
+            if run is None or run.status != RunStatus.running:
+                return None
             row = _latest(db, run_id)[item_id]
             row.status, row.started_at = ItemStatus.running, _now()
             instruction = row.instruction
@@ -597,7 +679,7 @@ def run_items(
             instruction=instruction,
             deps={d: done.get(d) for d in item.depends_on},
             registry=registry,
-            tools=tool_ctx,
+            tools=replace(tool_ctx, seen=set()),
             llm=llm,
         )
 
@@ -615,29 +697,64 @@ def run_items(
             db.commit()
         done[item_id] = outcome.payload
 
-    if concurrency <= 1:
-        while remaining:
-            item_id = next((i for i in remaining if ready(i)), remaining[0])  # цикл зависимостей — по порядку
-            remaining.remove(item_id)
-            save(item_id, execute(start(item_id), db_factory))
-    else:
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            running: dict[Future, str] = {}
-            while remaining or running:
-                for item_id in [i for i in remaining if ready(i)][: concurrency - len(running)]:
-                    remaining.remove(item_id)
-                    in_flight.add(item_id)
-                    running[pool.submit(execute, start(item_id), db_factory)] = item_id
-                if not running and remaining:  # цикл зависимостей — запускаем по порядку
-                    item_id = remaining.pop(0)
-                    in_flight.add(item_id)
-                    running[pool.submit(execute, start(item_id), db_factory)] = item_id
-                finished, _ = wait(running, return_when=FIRST_COMPLETED)
-                for future in finished:
-                    item_id = running.pop(future)
-                    save(item_id, future.result())
-                    in_flight.discard(item_id)
+    try:
+        if concurrency <= 1:
+            while remaining:
+                item_id = next((i for i in remaining if ready(i)), remaining[0])  # цикл зависимостей
+                remaining.remove(item_id)
+                ctx = start(item_id)
+                if ctx is None:
+                    return
+                save(item_id, execute(ctx, db_factory))
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                running: dict[Future, str] = {}
+                stopped = False
+                while (remaining and not stopped) or running:
+                    free = concurrency - len(running)
+                    batch = [] if stopped else [i for i in remaining if ready(i)][:free]
+                    if not stopped and not running and remaining and not batch:
+                        batch = [remaining[0]]  # цикл зависимостей — запускаем по порядку
+                    for item_id in batch:
+                        remaining.remove(item_id)
+                        ctx = start(item_id)
+                        if ctx is None:
+                            stopped = True
+                            break
+                        in_flight.add(item_id)
+                        running[pool.submit(execute, ctx, db_factory)] = item_id
+                    if not running:
+                        break
+                    finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for future in finished:
+                        item_id = running.pop(future)
+                        save(item_id, future.result())
+                        in_flight.discard(item_id)
+                if stopped:
+                    return
+    except BaseException as exc:  # сбой оркестратора (БД, лимит времени): не оставляем «running» навсегда
+        log.exception("Прогон %s прерван", run_id)
+        _abort(db_factory, run_id, f"{type(exc).__name__}: {exc}"[:2000])
+        raise
+    _finish(db_factory, run_id)
 
+
+def _abort(db_factory: DbFactory, run_id: uuid.UUID, error: str) -> None:
+    try:
+        with _session(db_factory) as db:
+            db.rollback()
+            for r in _latest(db, run_id).values():
+                if r.status in (ItemStatus.running, ItemStatus.pending):
+                    r.status, r.error, r.finished_at = ItemStatus.failed, "Прогон прерван: " + error, _now()
+            run = db.get(AssessmentRun, run_id)
+            if run is not None:
+                run.status, run.error, run.finished_at = RunStatus.failed, error, _now()
+            db.commit()
+    except Exception:
+        log.exception("Не удалось отметить прерывание прогона %s", run_id)
+
+
+def _finish(db_factory: DbFactory, run_id: uuid.UUID) -> None:
     with _session(db_factory) as db:
         run = db.get(AssessmentRun, run_id)
         pending = db.scalar(
@@ -648,7 +765,7 @@ def run_items(
                 SectionResult.status.in_((ItemStatus.pending, ItemStatus.running)),
             )
         )
-        if not pending and run.status == RunStatus.running:
+        if run is not None and not pending and run.status == RunStatus.running:
             run.status, run.finished_at = RunStatus.done, _now()
             project = db.get(Project, run.project_id)
             if project and project.status == ProjectStatus.analysis:

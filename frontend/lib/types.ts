@@ -37,6 +37,7 @@ export interface OrgSettings {
   page_number_format: "arabic" | "page_of_total";
   default_font: string;
   default_font_size: number;
+  web_search_enabled: boolean;
 }
 
 export interface Org {

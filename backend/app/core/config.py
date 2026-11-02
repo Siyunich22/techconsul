@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     analysis_max_tokens: int = 32_000  # на один ответ модели (потоком)
     analysis_web_search_max_uses: int = 5
     analysis_web_fetch_max_uses: int = 3
+    analysis_web_fetch_max_content_tokens: int = 20_000  # страница целиком повторно оплачивается каждым ходом
     analysis_stale_after_min: int = 180  # прогон «идёт» дольше — считаем, что воркер упал
 
     db_connect_timeout_s: int = 5
@@ -111,6 +112,8 @@ class Settings(BaseSettings):
         """Вне dev слабый JWT-секрет по умолчанию позволил бы подделывать токены входа."""
         if self.app_env != "dev" and (self.jwt_secret == "change-me" or len(self.jwt_secret) < 32):
             raise ValueError("JWT_SECRET: задайте случайную строку не короче 32 символов (APP_ENV ≠ dev)")
+        if self.app_env != "dev" and self.s3_secret_key == "techocenka-secret":
+            raise ValueError("S3_SECRET_KEY: значение по умолчанию допустимо только при APP_ENV=dev")
         return self
 
 

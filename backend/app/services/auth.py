@@ -37,7 +37,12 @@ def get_user_by_email(db: Session, email: str) -> User | None:
     return db.scalar(select(User).where(func.lower(User.email) == normalize_email(email)))
 
 
+PLATFORM_BIN = "000000000000"  # служебная организация администраторов платформы (app.cli create-admin)
+
+
 def register(db: Session, data: RegisterIn) -> User:
+    if data.organization.bin == PLATFORM_BIN:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Некорректный БИН")
     if get_user_by_email(db, data.user.email):
         raise HTTPException(status.HTTP_409_CONFLICT, "Пользователь с таким email уже зарегистрирован")
     if db.scalar(select(Organization).where(Organization.bin == data.organization.bin)):
@@ -63,9 +68,15 @@ def register(db: Session, data: RegisterIn) -> User:
     return user
 
 
+_DUMMY_HASH = hash_password("timing-equalizer")
+
+
 def authenticate(db: Session, email: str, password: str) -> User | None:
     user = get_user_by_email(db, email)
-    if user is None or not user.is_active or not verify_password(password, user.password_hash):
+    if user is None or not user.password_hash:
+        verify_password(password, _DUMMY_HASH)  # время ответа не выдаёт, зарегистрирован ли email
+        return None
+    if not verify_password(password, user.password_hash) or not user.is_active:
         return None
     return user
 
@@ -141,7 +152,17 @@ def clear_cookies(response: Response) -> None:
 # --- одноразовые токены: сброс пароля и приглашения ---
 
 
+def _expire_user_tokens(db: Session, user_id: uuid.UUID, purpose: TokenPurpose) -> None:
+    db.execute(
+        update(UserToken)
+        .where(UserToken.user_id == user_id, UserToken.purpose == purpose, UserToken.used_at.is_(None))
+        .values(used_at=_now())
+    )
+
+
 def _create_user_token(db: Session, user: User, purpose: TokenPurpose, ttl: timedelta) -> str:
+    # действует только последняя ссылка: ранее выданные (повторное приглашение, повторный сброс) гасятся
+    _expire_user_tokens(db, user.id, purpose)
     token, token_hash = new_opaque_token()
     db.add(UserToken(user_id=user.id, purpose=purpose, token_hash=token_hash, expires_at=_now() + ttl))
     return token
@@ -182,6 +203,7 @@ def request_password_reset(db: Session, mailer: Mailer, email: str) -> None:
 
 def reset_password(db: Session, token: str, password: str) -> User:
     user = _consume_user_token(db, token, TokenPurpose.reset, mark_used=True)
+    _expire_user_tokens(db, user.id, TokenPurpose.reset)
     user.password_hash = hash_password(password)
     revoke_all_sessions(db, user.id)
     audit(db, "auth.password_reset", org_id=user.org_id, user_id=user.id)
@@ -229,6 +251,10 @@ def invitation_info(db: Session, token: str) -> User:
 
 def accept_invitation(db: Session, token: str, password: str, full_name: str | None) -> User:
     user = _consume_user_token(db, token, TokenPurpose.invite, mark_used=True)
+    if user.password_hash is not None:  # приглашение уже принято — ссылку нельзя использовать повторно
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ссылка недействительна или устарела")
+    _expire_user_tokens(db, user.id, TokenPurpose.invite)
+    revoke_all_sessions(db, user.id)
     user.password_hash = hash_password(password)
     if full_name:
         user.full_name = full_name

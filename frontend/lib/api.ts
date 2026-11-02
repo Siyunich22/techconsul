@@ -28,7 +28,7 @@ export function errorMessage(err: unknown, fallback = "Произошла оши
 
 let refreshing: Promise<boolean> | null = null;
 
-async function refreshSession(): Promise<boolean> {
+export async function refreshSession(): Promise<boolean> {
   refreshing ??= fetch(`${API_PREFIX}/auth/refresh`, { method: "POST", credentials: "same-origin" })
     .then((r) => r.ok)
     .catch(() => false)

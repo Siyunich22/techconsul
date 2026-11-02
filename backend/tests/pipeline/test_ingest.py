@@ -133,6 +133,24 @@ def test_rar_or_7z_via_unar(tmp_path):
     assert [c.relative_path for c in p.children] == ["a/КП.txt"]
 
 
+@needs_tools
+def test_unar_rejects_symlink_entries(tmp_path):
+    """Ссылка в архиве на файл воркера (/proc/self/environ) выдала бы секреты как вложенный документ."""
+    src = tmp_path / "evil.zip"
+    with zipfile.ZipFile(src, "w") as zf:
+        link = zipfile.ZipInfo("env")
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16  # S_IFLNK
+        zf.writestr(link, "/proc/self/environ")
+        zf.writestr("ok.txt", "текст")
+    from app.pipeline.ingest.archive import parse_unar
+
+    work = tmp_path / "w"
+    work.mkdir()
+    with pytest.raises(IngestError, match="ссылки"):
+        parse_unar(src, work)
+
+
 def test_eml_body_and_attachment(tmp_path):
     msg = email.message.EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = "supplier@example.com", "client@example.kz", "КП на оборудование"

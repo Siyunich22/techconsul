@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.storage import Storage
 from app.models import DocumentStatus, ReferenceChunk, ReferenceDoc
 from app.pipeline.embedder import embed_query, get_embedder
-from app.pipeline.index import chunk_pages
+from app.pipeline.index import chunk_pages, filtered_vector_scan
 from app.pipeline.ingest import parse_file
 from app.pipeline.ingest.base import IngestError, Page
 
@@ -106,6 +106,7 @@ def search_references(db: Session, query: str, k: int = 8, kinds: list[str] | No
     }
     if kinds:
         params["kinds"] = kinds
+    filtered_vector_scan(db)
     rows = db.execute(sql(_REF_SQL.format(kind=kind)), params).all()
     keys = ("chunk_id", "reference_doc_id", "title", "kind", "page", "page_end", "text", "score")
     return [dict(zip(keys, row, strict=True)) for row in rows]

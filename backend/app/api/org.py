@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import exists, select
 
-from app.api.deps import CurrentPrincipal, DbSession, ManagerPrincipal
+from app.api.deps import CurrentPrincipal, DbSession, ManagerPrincipal, StaffPrincipal
 from app.core.config import get_settings
 from app.core.mailer import Mailer, get_mailer
 from app.core.storage import Storage, get_storage, make_key
@@ -63,7 +63,8 @@ def patch_org(data: OrgPatch, principal: ManagerPrincipal, db: DbSession):
     for field, value in fields.items():
         setattr(org, field, value)
     if data.settings is not None:
-        org.settings_json = data.settings.model_dump()
+        # слияние: поле, которого нет в форме клиента, не сбрасывается к значению по умолчанию
+        org.settings_json = {**(org.settings_json or {}), **data.settings.model_dump(exclude_unset=True)}
     audit(db, "org.updated", org_id=org.id, user_id=principal.user_id, fields=sorted(data.model_fields_set))
     db.commit()
     return org
@@ -103,7 +104,7 @@ def upload_reference_docx(principal: ManagerPrincipal, db: DbSession, storage: S
 
 
 @router.get("/reference-docx")
-def get_reference_docx(principal: CurrentPrincipal, db: DbSession, storage: StorageDep):
+def get_reference_docx(principal: StaffPrincipal, db: DbSession, storage: StorageDep):
     org = _org(db, principal)
     if not org.reference_docx_key:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "reference.docx не загружен")
@@ -142,7 +143,7 @@ def invite(data: InviteIn, principal: ManagerPrincipal, db: DbSession, mailer: M
 
 
 @router.get("/experts", response_model=list[ExpertOut])
-def list_experts(principal: CurrentPrincipal, db: DbSession, include_inactive: bool = False):
+def list_experts(principal: StaffPrincipal, db: DbSession, include_inactive: bool = False):
     stmt = scoped(Expert, principal.org_id).order_by(Expert.full_name)
     if not include_inactive:
         stmt = stmt.where(Expert.is_active.is_(True))
@@ -160,7 +161,7 @@ def create_expert(data: ExpertIn, principal: ManagerPrincipal, db: DbSession):
 
 
 @router.get("/experts/{expert_id}", response_model=ExpertOut)
-def get_expert(expert_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession):
+def get_expert(expert_id: uuid.UUID, principal: StaffPrincipal, db: DbSession):
     return get_scoped(db, Expert, expert_id, principal.org_id)
 
 
@@ -222,7 +223,7 @@ def upload_cv(
 
 
 @router.get("/experts/{expert_id}/cv")
-def download_cv(expert_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession, storage: StorageDep):
+def download_cv(expert_id: uuid.UUID, principal: StaffPrincipal, db: DbSession, storage: StorageDep):
     expert = get_scoped(db, Expert, expert_id, principal.org_id)
     if not expert.cv_file_key:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Резюме не загружено")

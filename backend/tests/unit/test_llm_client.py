@@ -223,5 +223,93 @@ def test_agent_loop_tools_limit_and_retry():
     )  # текст ошибки, не трейс
     assert third["tool_choice"] == {"type": "none"}  # после лимита — только итог
     assert "Лимит обращений" in third["messages"][-1]["content"][-1]["text"]
-    assert "не прошёл проверку" in fourth["messages"][-1]["content"]
+    retry_block = fourth["messages"][-1]["content"][-1]
+    assert "не прошёл проверку" in retry_block["text"]
+    assert retry_block["cache_control"] == {"type": "ephemeral"}  # кэш-точка на конце истории
+    # кэш-точка только в отправленной копии: в истории предыдущих запросов её нет
+    assert all("cache_control" not in b for b in fourth["messages"][2]["content"] if isinstance(b, dict))
     assert len(rec.rows) == 4  # каждый вызов учтён
+
+
+def test_parse_json_takes_last_valid_object():
+    from app.llm.client import _parse_json
+
+    text = 'Ищу {в документах}. Нашёл {"x": 1}. Итог:\n```json\n{"category": "смета"}\n```'
+    assert _parse_json(text, Answer).category == "смета"
+    with pytest.raises(LLMOutputError):
+        _parse_json("без JSON", Answer)
+
+
+def test_stream_overloaded_midway_is_retried(monkeypatch):
+    import httpx
+
+    import app.llm.client as client_mod
+
+    monkeypatch.setattr(client_mod, "STREAM_RETRY_DELAYS_S", (0, 0))
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    overloaded = client_mod.anthropic.APIStatusError(
+        "Overloaded",
+        response=httpx.Response(200, request=request),
+        body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+    messages = FakeMessages(
+        [overloaded, _blocks_response([SimpleNamespace(type="text", text='{"category": "псд"}')], "end_turn")]
+    )
+
+    @contextmanager
+    def stream(**kwargs):
+        response = messages.parse(**kwargs)
+        yield SimpleNamespace(get_final_message=lambda: response)
+
+    messages.stream = stream
+    rec = Recorder()
+    llm = AnthropicLLM(rec, client=SimpleNamespace(messages=messages))
+    answer = llm.agent(
+        ctx=CallContext(purpose="t"),
+        role="analysis",
+        system="S",
+        user="U",
+        tools=[],
+        server_tools=[],
+        schema=Answer,
+    )
+    assert answer.category == "псд" and len(messages.requests) == 2
+    assert [r.status for r in rec.rows] == ["error", "ok"]
+
+
+def test_truncated_agent_turn_not_kept_in_history():
+    messages = FakeMessages(
+        [
+            _blocks_response([_tool_call("calc", {"expression": "1"})], "max_tokens"),
+            _blocks_response([SimpleNamespace(type="text", text='{"category": "смета"}')], "end_turn"),
+        ]
+    )
+
+    @contextmanager
+    def stream(**kwargs):
+        response = messages.parse(**kwargs | {"messages": list(kwargs["messages"])})
+        yield SimpleNamespace(get_final_message=lambda: response)
+
+    messages.stream = stream
+    llm = AnthropicLLM(Recorder(), client=SimpleNamespace(messages=messages))
+    llm.agent(
+        ctx=CallContext(purpose="t"),
+        role="analysis",
+        system="S",
+        user="U",
+        tools=[],
+        server_tools=[],
+        schema=Answer,
+    )
+    retry = messages.requests[1]["messages"]
+    assert [m["role"] for m in retry] == ["user"]  # обрезанный ход с незавершённым tool_use снят
+    assert "max_tokens" in retry[0]["content"][-1]["text"]
+
+
+def test_web_search_requests_are_billed():
+    response = _response(Answer(category="x"))
+    response.usage.server_tool_use = SimpleNamespace(web_search_requests=3)
+    llm, _, rec = _llm([response])
+    _call(llm)
+    base = cost_usd("claude-haiku-4-5-20251001", input_tokens=1000, output_tokens=50, cache_read=200)
+    assert rec.rows[0].cost_usd == base + Decimal("0.03")

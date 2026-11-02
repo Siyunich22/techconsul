@@ -103,3 +103,34 @@ def test_finalize_rejects_full_without_real_sources():
     payload = SectionPayload.model_validate(_payload(analysis_md="Только выдумка [S5].", sources=[]))
     with pytest.raises(LLMError):
         finalize(payload, _item(), reg)
+
+
+def test_finalize_accepts_only_sources_the_item_received():
+    """Метка из общего реестра прогона, которую пункт не получал от инструментов, — выдумка."""
+    reg = SourceRegistry()
+    own = reg.doc(uuid.uuid4(), "ТЭО.pdf", 1)
+    foreign = reg.doc(uuid.uuid4(), "Смета.xlsx", 2)  # выдана другому пункту
+    payload = SectionPayload.model_validate(
+        _payload(
+            analysis_md=f"Факт [{own}], чужое [{foreign}], висячий веб [W9].",
+            findings=[{"text": "f", "source_ids": [own]}],
+            sources=[{"id": "W2", "type": "web", "url": "javascript:alert(1)", "title": "x"}],
+        )
+    )
+    result, warnings = finalize(payload, _item(), reg, allowed={own})
+    assert result.analysis_md == f"Факт [{own}], чужое, висячий веб."
+    assert {s.id for s in result.sources} == {own}
+    assert any(foreign in w and "W9" in w for w in warnings) and any("W2" in w for w in warnings)
+
+
+@pytest.mark.parametrize(
+    "expr", ["round(1, -10**7)", "(-8)**0.5", "max([1],[2])", "10**40", "abs([1])", "sum([])"]
+)
+def test_calc_rejects_dangerous_or_non_numeric(expr):
+    with pytest.raises(CalcError):
+        evaluate(expr)
+
+
+def test_calc_functions_still_work():
+    assert evaluate("round(12.5 * 3, 1)") == 37.5
+    assert evaluate("max([4, 5])") == 5 and evaluate("min(3, 1, 2)") == 1 and evaluate("sum([1, 2])") == 3

@@ -67,6 +67,8 @@ def ingest_document(
     if doc is None or doc.deleted_at is not None:
         return
     doc.status, doc.error = DocumentStatus.processing, None
+    # отметка начала: документ, оставшийся в «processing» после гибели воркера, можно переобработать
+    doc.meta_json = {**(doc.meta_json or {}), "ingest_started_at": _now().isoformat()}
     db.commit()
     try:
         with tempfile.TemporaryDirectory(prefix="ingest_") as tmp:
@@ -92,15 +94,41 @@ def ingest_document(
         return
 
     if doc.category_source != CategorySource.user:
-        _classify(db, doc, parsed)
+        try:
+            _classify(db, doc, parsed)
+        except Exception:  # без категории документ всё равно пригоден для поиска; категорию правят вручную
+            log.exception("Документ %s: классификация не выполнена", doc_id)
+            db.rollback()
+            doc = db.get(Document, doc_id)
     doc.status = DocumentStatus.recognized
     db.commit()
     enqueue_index(doc.id)
 
 
+MAX_ARCHIVE_DEPTH = 3  # архив в архиве в архиве; глубже — защита от «бомб» вложенности (zip quine)
+
+
+def _depth(db: Session, doc: Document) -> int:
+    depth, parent_id = 0, doc.parent_id
+    while parent_id is not None and depth <= MAX_ARCHIVE_DEPTH:
+        depth += 1
+        parent_id = db.scalar(select(Document.parent_id).where(Document.id == parent_id))
+    return depth
+
+
 def _save_children(db: Session, storage: Storage, doc: Document, parsed: Parsed, enqueue: Enqueue) -> None:
+    if parsed.children and _depth(db, doc) >= MAX_ARCHIVE_DEPTH:
+        raise IngestError(f"Вложенность архивов больше {MAX_ARCHIVE_DEPTH} — распакуйте архив заранее")
+    # повторная обработка (письмо с телом, повторная доставка задачи) не дублирует вложения
+    existing = set(
+        db.scalars(
+            select(Document.relative_path).where(Document.parent_id == doc.id, Document.deleted_at.is_(None))
+        )
+    )
     for child in parsed.children:
         rel = f"{doc.relative_path or doc.filename}/{child.relative_path}"
+        if rel in existing:
+            continue
         key = make_key(
             "orgs", str(doc.org_id), "projects", str(doc.project_id), "documents", filename=child.name
         )
