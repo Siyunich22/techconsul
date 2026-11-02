@@ -244,6 +244,7 @@ def extract(
                 user=f"Фрагмент пакета документов (часть {i + 1} из {len(batches)}):\n\n{text}",
                 schema=PassportData,
                 max_tokens=s.passport_map_max_tokens,
+                constrained=False,  # схема паспорта больше лимита грамматики structured outputs (D-065)
             ): i
             for i, text in enumerate(batches)
         }
@@ -288,6 +289,7 @@ def extract(
                 ),
                 schema=ReducedPassport,
                 max_tokens=s.passport_reduce_max_tokens,
+                constrained=False,
             )
             data = clean_passport(reduced.passport, valid)
             discrepancies = clean_discrepancies(reduced.discrepancies, valid)

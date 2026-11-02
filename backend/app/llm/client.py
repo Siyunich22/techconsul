@@ -5,6 +5,7 @@
 Каждый вызов записывается в llm_calls (токены, стоимость).
 """
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ class LLM(Protocol):
         user: str,
         schema: type[T],
         max_tokens: int = 4096,
+        constrained: bool = True,
     ) -> T: ...
 
 
@@ -94,17 +96,27 @@ class AnthropicLLM:
         user: str,
         schema: type[T],
         max_tokens: int = 4096,
+        constrained: bool = True,
     ) -> T:
+        """constrained=True — ответ ограничен грамматикой схемы (structured outputs). Для больших схем
+        (паспорт) API отвечает «grammar is too large» — тогда constrained=False: схема в системном промпте,
+        ответ — JSON в тексте, проверка Pydantic на нашей стороне и тот же один повтор (правило 7)."""
         model = model_for(role)
+        if not constrained:
+            system = f"{system}\n\n{_json_instruction(schema)}"
         messages: list[dict] = [{"role": "user", "content": user}]
         last_error: Exception | None = None
         for attempt in range(2):
             response = None
             try:
-                response = self._call(ctx, model, system, messages, schema, max_tokens)
+                response = self._call(
+                    ctx, model, system, messages, schema if constrained else None, max_tokens
+                )
                 if response.stop_reason == "refusal":
                     raise LLMRefusal(f"Модель отказалась отвечать ({ctx.purpose})")
-                parsed = response.parsed_output
+                if response.stop_reason == "max_tokens":
+                    raise LLMOutputError(f"Ответ обрезан лимитом max_tokens={max_tokens}")
+                parsed = response.parsed_output if constrained else _parse_json(_text(response), schema)
                 if parsed is None:
                     raise LLMOutputError(
                         f"Пустой структурированный ответ, stop_reason={response.stop_reason}"
@@ -113,23 +125,28 @@ class AnthropicLLM:
             except (ValidationError, LLMOutputError, ValueError) as exc:
                 last_error = exc
                 log.warning("Невалидный ответ LLM (%s), попытка %d: %s", ctx.purpose, attempt + 1, exc)
-                retry_note = f"Ответ не прошёл проверку схемы: {exc}. Повтори ответ строго по схеме."
-                if response is not None and _text(response):
-                    messages = [*messages, {"role": "assistant", "content": _text(response)}]
-                    messages = [*messages, {"role": "user", "content": retry_note}]
-                else:
-                    messages = [{"role": "user", "content": f"{user}\n\n{retry_note}"}]
+                retry_note = (
+                    f"Ответ не прошёл проверку схемы: {str(exc)[:2000]}. Повтори ответ строго по схеме."
+                )
+                previous = _text(response) if response is not None else ""
+                if previous:
+                    retry_note = f"Твой предыдущий ответ:\n{previous[:20000]}\n\n{retry_note}"
+                # одно новое сообщение пользователя, без правки истории (preserved thinking у новых моделей)
+                messages = [{"role": "user", "content": f"{user}\n\n{retry_note}"}]
         raise LLMOutputError(str(last_error))
 
     def _call(self, ctx, model, system, messages, schema, max_tokens):
+        params = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            "messages": messages,
+        }
         try:
-            response = self.client.messages.parse(
-                model=model,
-                max_tokens=max_tokens,
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=messages,
-                output_format=schema,
-            )
+            if schema is None:
+                response = self.client.messages.create(**params)
+            else:
+                response = self.client.messages.parse(**params, output_format=schema)
         except anthropic.APIConnectionError as exc:
             self._record(ctx, model, None, status="error", error=str(exc))
             raise LLMUnavailable(str(exc)) from exc
@@ -176,6 +193,21 @@ def _store_call(db: Session, ctx, model, tokens, status, error, request_id) -> N
         )
     )
     db.commit()
+
+
+def _json_instruction(schema: type[BaseModel]) -> str:
+    return (
+        "Формат ответа: только один JSON-объект без пояснений и без markdown, строго по JSON Schema:\n"
+        + json.dumps(schema.model_json_schema(), ensure_ascii=False)
+    )
+
+
+def _parse_json[T: BaseModel](text: str, schema: type[T]) -> T:
+    """JSON-объект из текста ответа (допускаем обёртку ```json и поясняющий текст вокруг)."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise LLMOutputError("В ответе нет JSON-объекта")
+    return schema.model_validate_json(text[start : end + 1])
 
 
 def _text(response) -> str:

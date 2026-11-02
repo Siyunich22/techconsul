@@ -121,3 +121,35 @@ def test_prompt_render_requires_all_variables():
     assert "- тэо_bfs" in render("classify_document", categories="- тэо_bfs — ТЭО")
     with pytest.raises(KeyError):
         render("classify_document")
+
+
+def test_unconstrained_json_mode_validates_and_retries():
+    """Большие схемы: без грамматики structured outputs — схема в промпте, JSON проверяется у нас."""
+    messages = FakeMessages([])
+    messages.create = messages.parse  # тот же учёт запросов, но через messages.create
+    messages.outcomes = [
+        _response(None, text='Вот ответ: {"wrong": 1}'),
+        _response(None, text='```json\n{"category": "смета"}\n```'),
+    ]
+    llm = AnthropicLLM(Recorder(), client=SimpleNamespace(messages=messages))
+    answer = llm.structured(
+        ctx=CallContext(purpose="test"),
+        role="extract",
+        system="S",
+        user="U",
+        schema=Answer,
+        constrained=False,
+    )
+    assert answer.category == "смета"
+    first, retry = messages.requests
+    assert "output_format" not in first and '"category"' in first["system"][0]["text"]  # схема в промпте
+    assert retry["messages"] == [
+        {"role": "user", "content": retry["messages"][0]["content"]}
+    ]  # без правки истории
+    assert '{"wrong": 1}' in retry["messages"][0]["content"]
+
+
+def test_truncated_answer_is_output_error():
+    llm, _, _ = _llm([_response(None, stop_reason="max_tokens"), _response(None, stop_reason="max_tokens")])
+    with pytest.raises(LLMOutputError, match="max_tokens"):
+        _call(llm)

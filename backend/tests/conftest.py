@@ -81,11 +81,18 @@ class FakeLLM:
         self.answers: list = []
         self.handler = None
 
-    def structured(self, *, ctx, role, system, user, schema, max_tokens=4096):
+    def structured(self, *, ctx, role, system, user, schema, max_tokens=4096, constrained=True):
         from app.llm.client import LLMUnavailable
 
         self.calls.append(
-            {"purpose": ctx.purpose, "role": role, "system": system, "user": user, "schema": schema.__name__}
+            {
+                "purpose": ctx.purpose,
+                "role": role,
+                "system": system,
+                "user": user,
+                "schema": schema.__name__,
+                "constrained": constrained,
+            }
         )
         if self.handler is not None:
             answer = self.handler(ctx.purpose, user, schema)
