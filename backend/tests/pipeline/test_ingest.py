@@ -71,6 +71,25 @@ def test_docx_converted_with_pages_and_preview(sample_files, tmp_path):
 
 
 @needs_tools
+def test_docx_pdf_export_falls_back_to_odt(sample_files, tmp_path, monkeypatch):
+    """Прямой экспорт docx → pdf упал (как на надстройках Office) — конвертируем через odt."""
+    from app.pipeline.ingest import office
+
+    real, calls = office.soffice_convert, []
+
+    def flaky(src, out_dir, target):
+        calls.append((src.suffix, target))
+        if src.suffix == ".docx" and target == "pdf":
+            raise IngestError("LibreOffice: SfxBaseModel::impl_store failed")
+        return real(src, out_dir, target)
+
+    monkeypatch.setattr(office, "soffice_convert", flaky)
+    p = _parse(sample_files / "Бизнес-план_Мукомольный_завод.docx", tmp_path)
+    assert calls == [(".docx", "pdf"), (".docx", "odt"), (".odt", "pdf")]
+    assert p.preview_pdf and p.preview_pdf.exists() and "300 тонн" in p.text
+
+
+@needs_tools
 def test_xlsx_formulas_become_values_with_cell_ranges(sample_files, tmp_path):
     p = _parse(sample_files / "Финмодель_мукомольный_завод.xlsx", tmp_path)
     assert p.meta["recalculated"] is True

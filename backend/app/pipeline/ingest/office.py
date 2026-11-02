@@ -51,9 +51,27 @@ def soffice_convert(src: Path, out_dir: Path, target: str) -> Path:
     return result
 
 
+# Экспорт в PDF напрямую из OOXML иногда падает (например, на надстройках Office — webextensions);
+# через формат ODF тот же документ конвертируется.
+_VIA_ODF = {".docx": "odt", ".doc": "odt", ".rtf": "odt", ".pptx": "odp", ".ppt": "odp"}
+
+
+def _to_pdf(path: Path, work_dir: Path) -> Path:
+    try:
+        return soffice_convert(path, work_dir, "pdf")
+    except IngestError as exc:
+        odf = _VIA_ODF.get(path.suffix.lower())
+        if odf is None:
+            raise
+        log.info("Прямая конвертация %s в PDF не удалась (%s) — через %s", path.name, exc, odf)
+        step = work_dir / "via_odf"
+        step.mkdir(exist_ok=True)
+        return soffice_convert(soffice_convert(path, step, odf), step, "pdf")
+
+
 def parse_office(path: Path, work_dir: Path) -> Parsed:
     try:
-        pdf = soffice_convert(path, work_dir, "pdf")
+        pdf = _to_pdf(path, work_dir)
     except IngestError as exc:
         log.warning("Конвертация %s в PDF не удалась (%s) — прямое извлечение текста", path.name, exc)
         return _direct(path)

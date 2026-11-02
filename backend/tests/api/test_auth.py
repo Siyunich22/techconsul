@@ -70,6 +70,7 @@ def test_refresh_rotates_and_detects_reuse(register, db):
     assert c.cookies.get(REFRESH_COOKIE) != old_refresh
 
     # Повтор старого (отозванного) токена — отзыв всех сессий пользователя.
+    c.cookies.delete(REFRESH_COOKIE)  # иначе клиент хранит обе cookie и отправляет действующую
     c.cookies.set(REFRESH_COOKIE, old_refresh, path="/api/v1/auth")
     assert c.post("/api/v1/auth/refresh").status_code == 401
     user = db.scalar(select(User).where(User.email == c.email))

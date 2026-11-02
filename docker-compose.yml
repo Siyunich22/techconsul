@@ -111,8 +111,8 @@ services:
 
   # разбор, OCR, LibreOffice, распаковка — параллельно
   worker:
-    build: {context: ., dockerfile: backend/Dockerfile}
-    image: techocenka-backend:dev  # один образ для api и воркеров
+    image: techocenka-backend:dev  # образ собирает api: три параллельные сборки одного тега зависали
+    pull_policy: never
     environment: *backend-env
     command: celery -A workers.celery_app worker -Q ingest,default --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-4} -n ingest@%h
     volumes: ["./backend:/app", "./templates:/templates:ro"]
@@ -121,8 +121,8 @@ services:
 
   # эмбеддинги: модель (~2 ГБ) загружена один раз, поэтому один процесс
   worker-index:
-    build: {context: ., dockerfile: backend/Dockerfile}
-    image: techocenka-backend:dev  # один образ для api и воркеров
+    image: techocenka-backend:dev  # образ собирает api: три параллельные сборки одного тега зависали
+    pull_policy: never
     environment: *backend-env
     command: celery -A workers.celery_app worker -Q index --loglevel=INFO --concurrency=1 -n index@%h
     volumes: ["./backend:/app", "./templates:/templates:ro", "models:/models"]

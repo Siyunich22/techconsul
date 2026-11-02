@@ -4,20 +4,28 @@
 
 ## Сервисы
 
-| Сервис Railway | Источник | Конфиг (Settings → Config-as-code) | Ресурсы |
-|---|---|---|---|
-| `postgres` | шаблон **pgvector** (образ `pgvector/pgvector:pg16`) + том | — | 0,5–1 ГБ RAM |
-| `redis` | Database → Redis | — | 256 МБ |
-| `minio` *(или внешний S3)* | Docker image `bitnamilegacy/minio:2025.5.24` + том `/bitnami/minio/data` | — | 512 МБ |
-| `api` | GitHub, root directory — **корень репо** | `/railway.json` (подхватывается автоматически) | 1 ГБ |
-| `worker` | тот же репо | `/backend/railway.worker.json` | 2 ГБ (OCR, LibreOffice) |
-| `worker-index` | тот же репо | `/backend/railway.worker-index.json` + том `/models` | **3–4 ГБ** (модель e5-large) |
-| `web` | тот же репо, root directory — **`/frontend`** | `/frontend/railway.json` (указать явно) | 512 МБ |
+| Сервис Railway | Источник | Ресурсы |
+|---|---|---|
+| `postgres` | Docker image `pgvector/pgvector:pg16` + том `/var/lib/postgresql/data` | 0,5–1 ГБ RAM |
+| `redis` | Database → Redis | 256 МБ |
+| `minio` *(или внешний S3)* | Docker image `bitnamilegacy/minio:2025.5.24` + том `/bitnami/minio/data`, `RAILWAY_RUN_UID=0` | 512 МБ |
+| `api` (на стенде — `techconsul`) | GitHub, root directory — корень репо | 1 ГБ |
+| `worker` | тот же репо | 2 ГБ (OCR, LibreOffice) |
+| `worker-index` | тот же репо + том `/models` | **3–4 ГБ** (модель e5-large) |
+| `web` | тот же репо, root directory — **`/frontend`** | 512 МБ |
 
-⚠ Если в логе сборки «Railpack could not determine how to build the app» — сервис не нашёл конфиг и включил автосборщик. Для `worker`, `worker-index` и `web` обязательно укажите путь к конфигу в **Settings → Config-as-code → Railway Config File** (путь — от корня репозитория, Root Directory на него не влияет); для `web` дополнительно — **Root Directory = `/frontend`**.
-Без явного пути сервис берёт корневой `/railway.json` — это конфиг `api`: `worker`/`worker-index` запустятся как ещё один API, а `web` не найдёт `backend/Dockerfile` внутри `/frontend`.
+Сборка и запуск задаются **в настройках сервиса** (Settings → Build / Deploy), файлов `railway.json` в репозитории нет (D-061: Config as Code Railway отключает с 2026-12-01).
 
-`api`, `worker`, `worker-index` собираются из одного `backend/Dockerfile` (контекст — корень репо, в образ попадают шаблоны ТЗ из `templates/`). Отличаются только командой запуска в конфиге.
+| Сервис | Dockerfile path | Watch paths | Start command | Pre-deploy | Healthcheck |
+|---|---|---|---|---|---|
+| `api` | `backend/Dockerfile` | `/backend/**`, `/templates/**` | — (CMD образа) | `alembic upgrade head` | `/health`, 120 с |
+| `worker` | `backend/Dockerfile` | `/backend/**`, `/templates/**` | `sh -c 'celery -A workers.celery_app worker -Q ingest,default --loglevel=INFO --concurrency=${WORKER_CONCURRENCY:-2} -n ingest@%h'` | — | — |
+| `worker-index` | `backend/Dockerfile` | `/backend/**` | `celery -A workers.celery_app worker -Q index --loglevel=INFO --concurrency=1 -n index@%h` | — | — |
+| `web` | `Dockerfile` (от `/frontend`) | `/frontend/**` | — | — | `/login`, 120 с |
+
+⚠ «Railpack could not determine how to build the app» в логе сборки — у сервиса не задан Dockerfile path, включился автосборщик.
+
+`api`, `worker`, `worker-index` собираются из одного `backend/Dockerfile` (контекст — корень репо, в образ попадают шаблоны ТЗ из `templates/`). Отличаются только командой запуска.
 
 ## Порядок
 
@@ -25,7 +33,7 @@
 2. **База:** `+ New → Template → pgvector` (или Docker image `pgvector/pgvector:pg16` с томом на `/var/lib/postgresql/data` и переменными `POSTGRES_USER/PASSWORD/DB`). Расширения `vector` и `pg_trgm` и все таблицы создаст `alembic upgrade head` перед первым деплоем `api`.
 3. **Redis:** `+ New → Database → Redis`.
 4. **Хранилище:** сервис `minio` из Docker-образа (переменные `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, том) — либо внешний S3/R2. Бакет `api` создаст сам при старте.
-5. Сервисы `api`, `worker`, `worker-index`, `web` из репозитория — пути конфигов из таблицы. Для `worker-index` — том на `/models` (модель 2,2 ГБ скачивается один раз).
+5. Сервисы `api`, `worker`, `worker-index`, `web` из репозитория — настройки сборки и запуска из таблицы выше. Для `worker-index` — том на `/models` (модель 2,2 ГБ скачивается один раз).
 6. Переменные (ниже) → Deploy. Публичный домен — только для `web` (Settings → Networking → Generate Domain); `api` наружу не открываем: браузер ходит в `web`, а он проксирует `/api/*` во внутреннюю сеть.
 7. Администратор платформы: в сервисе `api` → **Shell** (или `railway ssh`):
    `python -m app.cli create-admin admin@example.kz '<пароль>' 'ФИО'`.
@@ -47,7 +55,8 @@
 | `COOKIE_SECURE` | `true` |
 | `PUBLIC_URL` | `https://${{web.RAILWAY_PUBLIC_DOMAIN}}` |
 | `APP_ENV` | `staging` |
-| `ANTHROPIC_API_KEY` | ключ (необязательно: без него классификация документов — только правилами) |
+| `ANTHROPIC_API_KEY` | ключ API (`sk-ant-…`); без него паспорт и оценка не работают, классификация документов — только правилами |
+| `ANTHROPIC_WORKSPACE_ID` | `wrkspc_…` — только если ключ не привязан к workspace (ошибка «anthropic-workspace-id») |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` | почтовый сервис (для сброса пароля; приглашения работают и без почты — ссылка показывается в интерфейсе) |
 | `FASTEMBED_CACHE_PATH` | `/models` |
 
