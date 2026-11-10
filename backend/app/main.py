@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 
-from app.api import admin, assessment, auth, catalog, documents, health, org, passport, projects
+from app.api import admin, assessment, auth, catalog, documents, health, org, passport, projects, reports
 from app.core.config import get_settings
 from app.core.db import get_sessionmaker
 from app.core.storage import _s3
@@ -117,6 +117,7 @@ def create_app(*, register_default_template: bool = True) -> FastAPI:
         documents.router,
         passport.router,
         assessment.router,
+        reports.router,
         catalog.router,
         admin.router,
     ):

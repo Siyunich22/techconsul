@@ -33,8 +33,12 @@ from app.models.org import (
 )
 from app.models.passport import Passport, PassportStatus
 from app.models.project import MemberRole, Project, ProjectMember, ProjectStatus, TemplateVersion
+from app.models.report import RenderStatus, ReportStatus, ReportVersion
 
 __all__ = [
+    "RenderStatus",
+    "ReportStatus",
+    "ReportVersion",
     "AssessmentRun",
     "ItemStatus",
     "ResultAuthor",

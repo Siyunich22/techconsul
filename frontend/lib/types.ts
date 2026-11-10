@@ -392,3 +392,18 @@ export interface AssessmentItemDetail extends AssessmentItem {
   sources: AssessmentSource[];
   warnings: string[];
 }
+
+export interface ReportVersion {
+  id: string;
+  number: number;
+  version: string;
+  status: "draft" | "released";
+  render_status: "queued" | "rendering" | "ready" | "failed";
+  error: string | null;
+  filename: string;
+  has_docx: boolean;
+  has_pdf: boolean;
+  sha256: string | null;
+  created_at: string;
+  finished_at: string | null;
+}

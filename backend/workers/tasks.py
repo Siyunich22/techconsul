@@ -23,6 +23,10 @@ def enqueue_assessment(run_id: uuid.UUID, only: list[str] | None = None) -> None
     run_assessment_task.delay(str(run_id), only)
 
 
+def enqueue_report(report_id: uuid.UUID) -> None:
+    render_report_task.delay(str(report_id))
+
+
 def enqueue_passport(passport_id: uuid.UUID, run_id: uuid.UUID) -> None:
     extract_passport_task.delay(str(passport_id), str(run_id))
 
@@ -78,3 +82,12 @@ def extract_passport_task(passport_id: str, run_id: str) -> None:
 def run_assessment_task(run_id: str, only: list[str] | None = None) -> None:
     """Пункты прогона по зависимостям; повторный запуск задачи берёт только пункты в статусе pending."""
     run_items(get_sessionmaker(), uuid.UUID(run_id), only)
+
+
+@celery_app.task(name="report.render", soft_time_limit=20 * 60, time_limit=25 * 60)
+def render_report_task(report_id: str) -> None:
+    """DOCX + PDF отчёта (LibreOffice — в воркере разбора документов, очередь default)."""
+    from app.services.reports import render
+
+    with get_sessionmaker()() as db:
+        render(db, get_storage(), uuid.UUID(report_id))

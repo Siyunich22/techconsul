@@ -15,6 +15,7 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { DocumentsTab } from "@/components/documents/documents-tab";
 import { AssessmentTab } from "@/components/assessment/assessment-tab";
+import { ResultTab } from "@/components/report/result-tab";
 import { PassportTab } from "@/components/passport/passport-tab";
 import { IndependenceForm } from "@/components/project/independence-form";
 import { TemplateTree, type TreeNode } from "@/components/template-tree";
@@ -49,6 +50,7 @@ type Tab =
   | "documents"
   | "passport"
   | "assessment"
+  | "result"
   | "sections";
 const TABS: Tab[] = [
   "overview",
@@ -57,13 +59,13 @@ const TABS: Tab[] = [
   "documents",
   "passport",
   "assessment",
+  "result",
   "sections",
 ];
 // Вкладки следующих фаз (TZ §4.5 А–Ж) — номер фазы из TZ §12.
 const FUTURE_TABS: [string, number][] = [
   ["risks", 6],
   ["coverage", 7],
-  ["result", 8],
 ];
 
 function toPassport(p: Project): PassportInput {
@@ -256,6 +258,9 @@ export default function ProjectPage() {
             setTab("documents");
           }}
         />
+      )}
+      {tab === "result" && (
+        <ResultTab projectId={p.id} canGenerate={canReview} />
       )}
       {tab === "sections" && (
         <SectionsTab projectId={p.id} templateId={p.template_version.id} />
