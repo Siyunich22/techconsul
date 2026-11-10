@@ -479,7 +479,7 @@ function RunProgress({ run }: { run: AssessmentRun }) {
   );
 }
 
-function sourceLabel(
+export function sourceLabel(
   s: AssessmentSource,
   t: ReturnType<typeof useTranslations>,
 ): string {
@@ -758,7 +758,7 @@ function ListBlock({
 }
 
 /** Текст со ссылками [S12] → кнопки-источники; **жирный** — жирным. Без HTML-вставок. */
-function Cited({
+export function Cited({
   text,
   sources,
   onOpen,
@@ -795,7 +795,7 @@ function Cited({
 }
 
 /** Упрощённый Markdown: заголовки ###, списки - / 1., абзацы. */
-function Markdown({
+export function Markdown({
   text,
   render,
 }: {

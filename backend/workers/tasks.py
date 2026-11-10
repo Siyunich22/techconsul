@@ -23,6 +23,10 @@ def enqueue_assessment(run_id: uuid.UUID, only: list[str] | None = None) -> None
     run_assessment_task.delay(str(run_id), only)
 
 
+def enqueue_risks(run_id: uuid.UUID) -> None:
+    run_risks_task.delay(str(run_id))
+
+
 def enqueue_report(report_id: uuid.UUID) -> None:
     render_report_task.delay(str(report_id))
 
@@ -91,3 +95,11 @@ def render_report_task(report_id: str) -> None:
 
     with get_sessionmaker()() as db:
         render(db, get_storage(), uuid.UUID(report_id))
+
+
+@celery_app.task(name="risks.run", soft_time_limit=2 * 3600, time_limit=2 * 3600 + 300)
+def run_risks_task(run_id: str) -> None:
+    """Риски (15 обязательных + дополнительные) и выводы раздела 5 по результатам пунктов."""
+    from app.assessment.risks import run_stage
+
+    run_stage(get_sessionmaker(), uuid.UUID(run_id))

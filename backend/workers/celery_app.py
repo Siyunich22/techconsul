@@ -40,6 +40,7 @@ celery_app.conf.update(
         "index.embed_query": {"queue": "query"},
         "passport.extract": {"queue": "llm"},
         "assessment.run": {"queue": "llm"},
+        "risks.run": {"queue": "llm"},
     },
 )
 

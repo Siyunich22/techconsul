@@ -237,6 +237,7 @@ class Builder:
     cite: Citations = None  # type: ignore[assignment]
     toc: list[TocEntry] = field(default_factory=list)
     tables: int = 0
+    figures: int = 0
 
     def __post_init__(self) -> None:
         self.cite = Citations(self.data.sources)
@@ -511,10 +512,18 @@ class Builder:
                 )
             )
             return
-        if node.kind in ("risks", "conclusion") and not node.children:
+        if node.kind == "risks" and not node.children:
             if raw.get("requirement"):
                 self.requirement(raw["requirement"])
-            self.para(_t("pending_section"), italic=True)
+            self.risks_section()
+            return
+        if node.kind == "conclusion" and not node.children:
+            if raw.get("requirement"):
+                self.requirement(raw["requirement"])
+            if d.conclusions is None:
+                self.para(_t("pending_section"), italic=True)
+            else:
+                self.payload(d.conclusions)
             return
         if raw.get("intro"):
             self.para(raw["intro"])
@@ -528,6 +537,67 @@ class Builder:
                 for item in child.children:
                     if item.enabled:
                         self.item(item, 3)
+
+    def risks_section(self) -> None:
+        d = self.data
+        if not d.risks:
+            self.para(_t("pending_section"), italic=True)
+            return
+        integ = d.integral
+        zones = texts()["zones"]
+        if integ is not None and integ.level:
+            self.labeled(
+                _t("risks.integral"),
+                _t(
+                    "risks.integral_text",
+                    level=zones[integ.level],
+                    red=integ.red,
+                    yellow=integ.yellow,
+                    green=integ.green,
+                    scored=integ.scored,
+                    total=integ.total,
+                ),
+            )
+        groups = list(d.risk_groups) + sorted({r.group for r in d.risks} - set(d.risk_groups))
+        cols = texts()["risks"]["columns"]
+        for group in groups:
+            lines = [r for r in d.risks if r.group == group]
+            if not lines:
+                continue
+            self.heading(f"{group} {d.risk_groups.get(group, '')}".strip(), 2)
+            rows = []
+            for r in lines:
+                mark = "" if r.mandatory else " " + _t("risks.extra_mark")
+                if r.probability is None:
+                    rows.append([f"{r.code}. {r.title}{mark}", "—", "—", "—", _t("risks.not_scored"), "—"])
+                    continue
+                rows.append(
+                    [
+                        f"{r.code}. {r.title}{mark}",
+                        f"{d.probability_scale[r.probability]} ({r.probability})",
+                        f"{d.impact_scale[r.impact]} ({r.impact})",
+                        zones[r.zone],
+                        r.rationale,
+                        "; ".join(r.mitigation),
+                    ]
+                )
+            self.table(
+                _t("risks.table", group=d.risk_groups.get(group, group).lower()),
+                cols,
+                rows,
+                widths=[3.5, 2.4, 2.0, 1.9, 4.3, 3.0],
+            )
+        scored = [(r.code, r.probability, r.impact) for r in d.risks if r.probability]
+        if scored:
+            from app.report.charts import heatmap_png
+
+            png = heatmap_png(d.zones, d.probability_scale, d.impact_scale, scored)  # type: ignore[arg-type]
+            p = _no_indent(self.para(), WD_ALIGN_PARAGRAPH.CENTER)
+            p.paragraph_format.keep_with_next = True
+            p.add_run().add_picture(io.BytesIO(png), width=Cm(14))
+            self.figures += 1
+            cap = _no_indent(self.para(), WD_ALIGN_PARAGRAPH.CENTER)
+            cap.add_run(f"{_t('risks.figure_word')} {self.figures} – {_t('risks.heatmap')}")
 
     def requirement(self, text: str) -> None:
         p = self.para()
@@ -640,6 +710,28 @@ class Builder:
                     str(nsrc),
                     experts.get(_section_of(node.id, experts), "—"),
                     approved["true" if res and res.approved else "false"],
+                ]
+            )
+        for r in d.risks:
+            rows.append(
+                [
+                    r.code,
+                    r.title,
+                    texts()["zones"][r.zone] if r.zone else labels["missing"],
+                    "—",
+                    experts.get(_section_of("4", experts), "—"),
+                    approved["true" if r.approved else "false"],
+                ]
+            )
+        if d.conclusions is not None:
+            rows.append(
+                [
+                    "5",
+                    "Выводы",
+                    labels[d.conclusions.disclosure_status],
+                    str(len(d.conclusions.sources)),
+                    experts.get(_section_of("5", experts), "—"),
+                    approved["true" if d.conclusions_approved else "false"],
                 ]
             )
         self.table(

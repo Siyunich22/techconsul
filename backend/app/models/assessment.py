@@ -54,6 +54,17 @@ class AssessmentRun(UUIDPk, Timestamps, Base):
     error: Mapped[str | None] = mapped_column(Text)
     # паспорт на момент запуска — агенты работают с зафиксированной версией
     passport_json: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    # этап рисков и выводов (TZ §5.4–5.5): после пунктов раздела 3, запускается отдельно
+    risks_status: Mapped[str | None] = mapped_column(String(20))  # queued | running | done | failed
+    risks_error: Mapped[str | None] = mapped_column(Text)
+    risks_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    risks_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    conclusions_json: Mapped[dict | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )  # раздел 5 (SectionPayload)
+    conclusions_review: Mapped[ReviewStatus] = mapped_column(
+        Enum(ReviewStatus, name="review_status"), default=ReviewStatus.ai_draft
+    )
 
 
 class SectionResult(UUIDPk, Timestamps, Base):
@@ -120,3 +131,34 @@ class Source(UUIDPk, Base):
     title: Mapped[str] = mapped_column(Text, default="")
     accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RiskResult(UUIDPk, Timestamps, Base):
+    """Оценка риска в прогоне (TZ §5.4): обязательные риски шаблона и предложенные агентом (X1…).
+    Повторная оценка — новая версия (старые не перезаписываются)."""
+
+    __tablename__ = "risk_results"
+    __table_args__ = (UniqueConstraint("run_id", "code", "version"),)
+
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assessment_runs.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(20))
+    group: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(Text)
+    mandatory: Mapped[bool] = mapped_column(default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[ItemStatus] = mapped_column(
+        Enum(ItemStatus, name="item_status"), default=ItemStatus.pending
+    )
+    payload_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    author: Mapped[ResultAuthor] = mapped_column(
+        Enum(ResultAuthor, name="result_author"), default=ResultAuthor.ai
+    )
+    review_status: Mapped[ReviewStatus] = mapped_column(
+        Enum(ReviewStatus, name="review_status"), default=ReviewStatus.ai_draft
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    validator_warnings_json: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")

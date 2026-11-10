@@ -1,5 +1,7 @@
 """Данные отчёта: структура — из YAML шаблона (правило 1), содержание пунктов — последние версии прогона."""
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -47,6 +49,20 @@ class SourceInfo:
 
 
 @dataclass
+class RiskLine:
+    code: str
+    group: str
+    title: str
+    mandatory: bool
+    probability: int | None
+    impact: int | None
+    zone: str | None
+    rationale: str
+    mitigation: list[str]
+    approved: bool
+
+
+@dataclass
 class Member:
     full_name: str
     role: str  # lead | expert
@@ -79,8 +95,15 @@ class ReportData:
     logo: bytes | None = None
     logo_type: str | None = None
     reference_docx: bytes | None = None
-    sha256: str | None = None
-    extra: dict = field(default_factory=dict)
+    sha256: str | None = None  # контрольная сумма содержания (выпущенная версия — в колонтитуле)
+    risks: list[RiskLine] = field(default_factory=list)
+    risk_groups: dict[str, str] = field(default_factory=dict)
+    probability_scale: dict[int, str] = field(default_factory=dict)
+    impact_scale: dict[int, str] = field(default_factory=dict)
+    zones: dict[str, str] = field(default_factory=dict)
+    integral: object | None = None  # app.schemas.risk.Integral
+    conclusions: SectionPayload | None = None
+    conclusions_approved: bool = False
 
 
 def _read(storage: Storage, key: str | None) -> bytes | None:
@@ -167,7 +190,25 @@ def collect(
     if logo_type not in ("png", "jpg", "jpeg"):  # SVG в DOCX без растровой копии не вставляем
         logo, logo_type = None, None
 
+    risks, spec_data, conclusions = _risks(db, project, run)
+    content = json.dumps(
+        {
+            "items": {
+                k: v.payload.model_dump(mode="json") if v.payload else None for k, v in sorted(items.items())
+            },
+            "risks": [r.__dict__ for r in risks],
+            "conclusions": conclusions.model_dump(mode="json") if conclusions else None,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
     return ReportData(
+        sha256=hashlib.sha256(content.encode()).hexdigest(),
+        risks=risks,
+        conclusions=conclusions,
+        conclusions_approved=bool(run and run.conclusions_review == ReviewStatus.approved),
+        **spec_data,
         project_name=project.name,
         customer_name=project.customer_name,
         customer_bin=project.customer_bin,
@@ -188,6 +229,53 @@ def collect(
         logo=logo,
         logo_type=logo_type,
         reference_docx=_read(storage, org.reference_docx_key) if org and org.reference_docx_key else None,
+    )
+
+
+def _risks(db: Session, project: Project, run: AssessmentRun | None):
+    from app.assessment.risks import integral, latest_risks, risk_spec
+    from app.schemas.risk import RiskPayload
+    from app.template_engine.expr import zone_for
+
+    spec = risk_spec(project)
+    if spec is None:
+        return [], {}, None
+    rows = latest_risks(db, run.id) if run else {}
+    order = {r.code: n for n, r in enumerate(spec.risks)}
+    lines: list[RiskLine] = []
+    for code in sorted(rows, key=lambda c: (order.get(c, 100), c)):
+        row = rows[code]
+        p = RiskPayload.model_validate(row.payload_json) if row.payload_json else None
+        lines.append(
+            RiskLine(
+                code=code,
+                group=row.group,
+                title=row.title,
+                mandatory=row.mandatory,
+                probability=p.probability if p else None,
+                impact=p.impact if p else None,
+                zone=zone_for(spec.zones, p.probability, p.impact) if p else None,
+                rationale=p.rationale if p else "",
+                mitigation=p.mitigation if p else [],
+                approved=row.review_status == ReviewStatus.approved,
+            )
+        )
+    scored = [(r.probability, r.impact) for r in lines if r.mandatory and r.probability]
+    conclusions = (
+        SectionPayload.model_validate(run.conclusions_json)
+        if run is not None and run.conclusions_json
+        else None
+    )
+    return (
+        lines,
+        {
+            "risk_groups": spec.groups,
+            "probability_scale": spec.probability_scale,
+            "impact_scale": spec.impact_scale,
+            "zones": spec.zones,
+            "integral": integral(spec, scored, len(spec.risks)),  # type: ignore[arg-type]
+        },
+        conclusions,
     )
 
 

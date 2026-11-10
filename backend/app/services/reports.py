@@ -81,9 +81,13 @@ def get_report(db: Session, project: Project, report_id: uuid.UUID) -> ReportVer
 
 
 def create_draft(
-    db: Session, enqueuer: ReportEnqueuer, principal: Principal, project: Project
+    db: Session, enqueuer: ReportEnqueuer, principal: Principal, project: Project, *, release: bool = False
 ) -> ReportVersion:
+    """Черновик v0.N — в любой момент; выпуск vN.0 — руководитель и только при чистом валидаторе
+    (все пункты, риски и выводы утверждены экспертами, блокирующих ошибок нет — правило 3)."""
     require_reviewer(principal)
+    if release and not principal.can_manage:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Выпускать отчёт может руководитель проекта")
     db.scalar(select(Project.id).where(Project.id == project.id).with_for_update())  # номера по очереди
     run = latest_run(db, project)
     if run is None:
@@ -101,17 +105,32 @@ def create_draft(
     )
     if busy:
         raise HTTPException(status.HTTP_409_CONFLICT, "Отчёт уже формируется")
+    if release:
+        from app.services.risks import coverage
+
+        cov = coverage(db, project)
+        if not cov.can_release:
+            errors = [i.message for i in cov.issues if i.level == "error"]
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Выпуск невозможен — ошибок валидатора: {len(errors)}. Например: {'; '.join(errors[:3])}",
+            )
     number = (
         db.scalar(select(func.max(ReportVersion.number)).where(ReportVersion.project_id == project.id)) or 0
     ) + 1
+    released_before = db.scalar(
+        select(func.count())
+        .select_from(ReportVersion)
+        .where(ReportVersion.project_id == project.id, ReportVersion.status == ReportStatus.released)
+    )
     now = _now()
     report = ReportVersion(
         org_id=project.org_id,
         project_id=project.id,
         run_id=run.id,
         number=number,
-        version=f"0.{number}",
-        status=ReportStatus.draft,
+        version=f"{released_before + 1}.0" if release else f"0.{number}",
+        status=ReportStatus.released if release else ReportStatus.draft,
         render_status=RenderStatus.queued,
         filename=report_filename(project.name, now),
         created_by=principal.user_id,
@@ -120,7 +139,7 @@ def create_draft(
     db.flush()
     audit(
         db,
-        "report.draft_created",
+        "report.released" if release else "report.draft_created",
         org_id=project.org_id,
         user_id=principal.user_id,
         project_id=project.id,

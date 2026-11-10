@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime
 
+from pydantic import BaseModel
+
 from app.schemas.common import ORMModel
 
 
@@ -17,3 +19,7 @@ class ReportOut(ORMModel):
     sha256: str | None
     created_at: datetime
     finished_at: datetime | None
+
+
+class ReportCreateIn(BaseModel):
+    release: bool = False  # выпуск vN.0 — только при чистом валидаторе

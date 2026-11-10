@@ -15,7 +15,9 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { DocumentsTab } from "@/components/documents/documents-tab";
 import { AssessmentTab } from "@/components/assessment/assessment-tab";
+import { CoverageTab } from "@/components/coverage/coverage-tab";
 import { ResultTab } from "@/components/report/result-tab";
+import { RisksTab } from "@/components/risks/risks-tab";
 import { PassportTab } from "@/components/passport/passport-tab";
 import { IndependenceForm } from "@/components/project/independence-form";
 import { TemplateTree, type TreeNode } from "@/components/template-tree";
@@ -50,6 +52,8 @@ type Tab =
   | "documents"
   | "passport"
   | "assessment"
+  | "risks"
+  | "coverage"
   | "result"
   | "sections";
 const TABS: Tab[] = [
@@ -59,14 +63,13 @@ const TABS: Tab[] = [
   "documents",
   "passport",
   "assessment",
+  "risks",
+  "coverage",
   "result",
   "sections",
 ];
 // Вкладки следующих фаз (TZ §4.5 А–Ж) — номер фазы из TZ §12.
-const FUTURE_TABS: [string, number][] = [
-  ["risks", 6],
-  ["coverage", 7],
-];
+const FUTURE_TABS: [string, number][] = [];
 
 function toPassport(p: Project): PassportInput {
   return {
@@ -257,6 +260,25 @@ export default function ProjectPage() {
             setDeepLink({ docId, page, q });
             setTab("documents");
           }}
+        />
+      )}
+      {tab === "risks" && (
+        <RisksTab
+          projectId={p.id}
+          canRun={canManage}
+          canReview={canReview}
+          onOpenSource={(docId, page, q) => {
+            setDeepLink({ docId, page, q });
+            setTab("documents");
+          }}
+        />
+      )}
+      {tab === "coverage" && (
+        <CoverageTab
+          projectId={p.id}
+          canReview={canReview}
+          canRelease={canManage}
+          onReleased={() => setTab("result")}
         />
       )}
       {tab === "result" && (

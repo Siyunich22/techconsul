@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from app.api.deps import CurrentPrincipal, DbSession
 from app.core.storage import Storage, get_storage
 from app.models import RenderStatus, ReportVersion
-from app.schemas.report import ReportOut
+from app.schemas.report import ReportCreateIn, ReportOut
 from app.services import reports as svc
 from app.services.audit import audit
 from app.services.projects import get_project
@@ -42,10 +42,16 @@ def list_reports(project_id: uuid.UUID, principal: CurrentPrincipal, db: DbSessi
 
 
 @router.post("", response_model=ReportOut, status_code=status.HTTP_202_ACCEPTED)
-def create_draft(project_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession, enqueuer: EnqueuerDep):
-    """Черновик отчёта по последнему прогону оценки (водяной знак «Черновик»)."""
+def create_draft(
+    project_id: uuid.UUID,
+    principal: CurrentPrincipal,
+    db: DbSession,
+    enqueuer: EnqueuerDep,
+    body: ReportCreateIn | None = None,
+):
+    """Черновик отчёта по последнему прогону (водяной знак «Черновик») или выпуск (release=true)."""
     project = get_project(db, principal, project_id)
-    return _out(svc.create_draft(db, enqueuer, principal, project))
+    return _out(svc.create_draft(db, enqueuer, principal, project, release=bool(body and body.release)))
 
 
 @router.get("/{report_id}/download")

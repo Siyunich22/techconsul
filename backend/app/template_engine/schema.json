@@ -133,7 +133,8 @@
             "green": {"$ref": "#/$defs/text"}
           }
         },
-        "mandatory_risks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/mandatoryRisk"}}
+        "mandatory_risks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/mandatoryRisk"}},
+        "risk_groups": {"type": "object", "additionalProperties": {"$ref": "#/$defs/text"}}
       },
       "not": {"required": ["items", "subsections"]},
       "allOf": [

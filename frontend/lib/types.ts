@@ -407,3 +407,72 @@ export interface ReportVersion {
   created_at: string;
   finished_at: string | null;
 }
+
+export type Zone = "red" | "yellow" | "green";
+export type ReviewStatus = "ai_draft" | "in_review" | "approved";
+
+export interface Risk {
+  code: string;
+  group: string;
+  group_title: string;
+  title: string;
+  mandatory: boolean;
+  status: string;
+  version: number;
+  probability: number | null;
+  impact: number | null;
+  zone: Zone | null;
+  rationale: string | null;
+  mitigation: string[];
+  related_items: string[];
+  review_status: ReviewStatus;
+  error: string | null;
+  warnings: string[];
+}
+
+export interface Risks {
+  run_id: string | null;
+  status: "queued" | "running" | "done" | "failed" | null;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  probability_scale: Record<string, string>;
+  impact_scale: Record<string, string>;
+  zone_matrix: Record<string, Zone>;
+  risks: Risk[];
+  integral: {
+    level: Zone | null;
+    red: number;
+    yellow: number;
+    green: number;
+    scored: number;
+    total: number;
+    index: number;
+  };
+  conclusions: SectionPayload | null;
+  conclusions_review: ReviewStatus;
+  sources: AssessmentSource[];
+  estimate_usd_min: string;
+  estimate_usd_max: string;
+}
+
+export interface CoverageRow {
+  ref: string;
+  kind: "item" | "risk" | "conclusions";
+  title: string;
+  section: string;
+  status: string;
+  disclosure_status: DisclosureStatus | null;
+  sources: number;
+  experts: string[];
+  review_status: ReviewStatus;
+}
+
+export interface Coverage {
+  run_id: string | null;
+  rows: CoverageRow[];
+  issues: { level: "error" | "warning"; rule: string; message: string; ref: string | null }[];
+  approved: number;
+  total: number;
+  can_release: boolean;
+}

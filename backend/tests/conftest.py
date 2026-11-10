@@ -242,6 +242,7 @@ def app(db, storage, mailer, enqueuer):
     from app.services.documents import get_enqueuer
     from app.services.passport import get_passport_enqueuer
     from app.services.reports import get_report_enqueuer, render
+    from app.services.risks import get_risks_enqueuer
 
     class SyncPassportEnqueuer:
         def extract(self, passport_id, run_id):
@@ -251,6 +252,12 @@ def app(db, storage, mailer, enqueuer):
         return nullcontext(db)  # одна тестовая сессия; пункты выполняются последовательно
 
     limiter = MemoryRateLimiter()
+
+    class SyncRisksEnqueuer:
+        def run(self, run_id):
+            from app.assessment.risks import run_stage
+
+            run_stage(db_factory, run_id, concurrency=1)
 
     class SyncReportEnqueuer:
         def render(self, report_id):
@@ -274,6 +281,7 @@ def app(db, storage, mailer, enqueuer):
     app.dependency_overrides[get_passport_enqueuer] = lambda: SyncPassportEnqueuer()
     app.dependency_overrides[get_assessment_enqueuer] = lambda: SyncAssessmentEnqueuer()
     app.dependency_overrides[get_report_enqueuer] = lambda: SyncReportEnqueuer()
+    app.dependency_overrides[get_risks_enqueuer] = lambda: SyncRisksEnqueuer()
     app.dependency_overrides[get_db_factory] = lambda: db_factory
     return app
 
