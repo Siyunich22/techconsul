@@ -449,6 +449,7 @@ def _item_out(row: SectionResult, titles: dict) -> ItemOut:
         started_at=row.started_at,
         finished_at=row.finished_at,
         reused=row.reused_from_id is not None,
+        author=row.author.value,
     )
 
 

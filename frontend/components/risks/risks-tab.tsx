@@ -1,15 +1,20 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, Play, Undo2 } from "lucide-react";
+import { Loader2, Pencil, Play } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import { Cited, Markdown } from "@/components/assessment/assessment-tab";
+import { Comments } from "@/components/review/comments";
+import { ItemEditor, type ItemEditBody } from "@/components/review/item-editor";
+import { ReviewControls } from "@/components/review/review-controls";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { api, errorMessage } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { ReviewStatus, Risk, Risks, Zone } from "@/lib/types";
@@ -29,6 +34,14 @@ const ZONE_BADGE: Record<Zone, "destructive" | "warning" | "success"> = {
 
 type OpenSource = (docId: string, page: number, q?: string) => void;
 
+interface RiskEditBody {
+  probability: number;
+  impact: number;
+  rationale: string;
+  mitigation: string[];
+  note: string;
+}
+
 /** Риски (TZ §4.5 Д): реестр 15 обязательных + дополнительных рисков, тепловая карта, выводы раздела 5. */
 export function RisksTab({
   projectId,
@@ -44,6 +57,7 @@ export function RisksTab({
   const t = useTranslations("risks");
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
+  const [editingConclusions, setEditingConclusions] = useState(false);
   const key = ["risks", projectId];
   const risks = useQuery({
     queryKey: key,
@@ -63,9 +77,29 @@ export function RisksTab({
     },
   });
   const review = useMutation({
-    mutationFn: ({ url, status }: { url: string; status: ReviewStatus }) =>
-      api.put<Risks>(`/projects/${projectId}/${url}`, { status }),
+    mutationFn: ({
+      url,
+      status,
+      version,
+    }: {
+      url: string;
+      status: ReviewStatus;
+      version?: number;
+    }) => api.put<Risks>(`/projects/${projectId}/${url}`, { status, version }),
     onSuccess: onData,
+  });
+  const editRisk = useMutation({
+    mutationFn: ({ code, body }: { code: string; body: RiskEditBody }) =>
+      api.put<Risks>(`/projects/${projectId}/risks/${code}/edit`, body),
+    onSuccess: onData,
+  });
+  const editConclusions = useMutation({
+    mutationFn: (body: ItemEditBody) =>
+      api.put<Risks>(`/projects/${projectId}/conclusions/edit`, body),
+    onSuccess: (data) => {
+      setEditingConclusions(false);
+      onData(data);
+    },
   });
   const sources = useMemo(
     () => new Map((risks.data?.sources ?? []).map((s) => [s.sid, s])),
@@ -168,9 +202,12 @@ export function RisksTab({
               {d.error}
             </Alert>
           )}
-          {review.error && (
+          {review.error ? (
             <Alert variant="destructive">{errorMessage(review.error)}</Alert>
-          )}
+          ) : null}
+          {editRisk.error ? (
+            <Alert variant="destructive">{errorMessage(editRisk.error)}</Alert>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -186,14 +223,20 @@ export function RisksTab({
           <CardContent className="flex flex-col divide-y">
             {g.risks.map((r) => (
               <RiskRow
-                key={r.code}
+                key={`${r.code}-${r.version}`}
                 risk={r}
                 data={d}
                 cite={cite}
                 canReview={canReview}
+                projectId={projectId}
                 onReview={(status) =>
-                  review.mutate({ url: `risks/${r.code}/review`, status })
+                  review.mutate({
+                    url: `risks/${r.code}/review`,
+                    status,
+                    version: r.version,
+                  })
                 }
+                onEdit={(body) => editRisk.mutateAsync({ code: r.code, body })}
               />
             ))}
           </CardContent>
@@ -204,46 +247,74 @@ export function RisksTab({
         <Card data-testid="conclusions">
           <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
             <CardTitle className="text-base">{t("conclusions")}</CardTitle>
-            <ReviewControls
-              status={d.conclusions_review}
-              canReview={canReview}
-              onReview={(status) =>
-                review.mutate({ url: "conclusions/review", status })
-              }
-            />
+            <span className="flex items-center gap-2">
+              <ReviewControls
+                status={d.conclusions_review}
+                canReview={canReview}
+                onReview={(status) =>
+                  review.mutate({ url: "conclusions/review", status })
+                }
+              />
+              {canReview && !editingConclusions && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setEditingConclusions(true)}
+                >
+                  <Pencil /> {t("edit")}
+                </Button>
+              )}
+            </span>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 text-sm">
-            <p className="font-medium">{cite(d.conclusions.summary)}</p>
-            <Markdown text={d.conclusions.analysis_md} render={cite} />
-            {d.conclusions.tables.map((tbl, i) => (
-              <div key={i} className="overflow-x-auto">
-                <p className="mb-1 text-xs font-semibold text-muted-foreground">
-                  {tbl.title}
-                </p>
-                <table className="w-full border text-xs">
-                  <thead>
-                    <tr>
-                      {tbl.columns.map((c) => (
-                        <th key={c} className="border px-2 py-1 text-left">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tbl.rows.map((row, j) => (
-                      <tr key={j}>
-                        {row.map((cell, k) => (
-                          <td key={k} className="border px-2 py-1 align-top">
-                            {cite(String(cell))}
-                          </td>
+            {editingConclusions ? (
+              <ItemEditor
+                payload={d.conclusions}
+                sources={d.sources.map((x) => x.sid)}
+                pending={editConclusions.isPending}
+                error={editConclusions.error}
+                onSave={(body) => editConclusions.mutate(body)}
+                onCancel={() => setEditingConclusions(false)}
+              />
+            ) : (
+              <>
+                <p className="font-medium">{cite(d.conclusions.summary)}</p>
+                <Markdown text={d.conclusions.analysis_md} render={cite} />
+                {d.conclusions.tables.map((tbl, i) => (
+                  <div key={i} className="overflow-x-auto">
+                    <p className="mb-1 text-xs font-semibold text-muted-foreground">
+                      {tbl.title}
+                    </p>
+                    <table className="w-full border text-xs">
+                      <thead>
+                        <tr>
+                          {tbl.columns.map((c) => (
+                            <th key={c} className="border px-2 py-1 text-left">
+                              {c}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tbl.rows.map((row, j) => (
+                          <tr key={j}>
+                            {row.map((cell, k) => (
+                              <td
+                                key={k}
+                                className="border px-2 py-1 align-top"
+                              >
+                                {cite(String(cell))}
+                              </td>
+                            ))}
+                          </tr>
                         ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </>
+            )}
+            <Comments projectId={projectId} refId="5" canComment={canReview} />
           </CardContent>
         </Card>
       )}
@@ -311,15 +382,38 @@ function RiskRow({
   data,
   cite,
   canReview,
+  projectId,
   onReview,
+  onEdit,
 }: {
   risk: Risk;
   data: Risks;
-  cite: (s: string) => React.ReactNode;
+  cite: (s: string) => ReactNode;
   canReview: boolean;
+  projectId: string;
   onReview: (status: ReviewStatus) => void;
+  onEdit: (body: RiskEditBody) => Promise<unknown>;
 }) {
   const t = useTranslations("risks");
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    probability: risk.probability ?? 3,
+    impact: risk.impact ?? 2,
+    rationale: risk.rationale ?? "",
+    mitigation: risk.mitigation.join("\n"),
+  });
+  const save = () =>
+    onEdit({
+      probability: form.probability,
+      impact: form.impact,
+      rationale: form.rationale,
+      mitigation: form.mitigation
+        .split("\n")
+        .map((x) => x.trim())
+        .filter(Boolean),
+      note: "",
+    }).then(() => setEditing(false));
+
   return (
     <div
       className="flex flex-col gap-2 py-3 text-sm"
@@ -343,8 +437,84 @@ function RiskRow({
           canReview={canReview && risk.status === "done"}
           onReview={onReview}
         />
+        {canReview && risk.status === "done" && !editing && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setEditing(true)}
+            title={t("edit")}
+          >
+            <Pencil />
+          </Button>
+        )}
       </div>
-      {risk.probability !== null && risk.impact !== null ? (
+      {editing ? (
+        <div
+          className="flex flex-col gap-2 rounded-md border p-3"
+          data-testid={`risk-editor-${risk.code}`}
+        >
+          <div className="flex flex-wrap gap-3">
+            <label className="flex flex-col gap-1 text-xs">
+              {t("probability")}
+              <Select
+                value={form.probability}
+                onChange={(e) =>
+                  setForm({ ...form, probability: Number(e.target.value) })
+                }
+              >
+                {Object.entries(data.probability_scale).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {k} — {v}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs">
+              {t("impact")}
+              <Select
+                value={form.impact}
+                onChange={(e) =>
+                  setForm({ ...form, impact: Number(e.target.value) })
+                }
+              >
+                {Object.entries(data.impact_scale).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {k} — {v}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          </div>
+          <label className="flex flex-col gap-1 text-xs">
+            {t("rationale")}
+            <Textarea
+              rows={4}
+              value={form.rationale}
+              onChange={(e) => setForm({ ...form, rationale: e.target.value })}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs">
+            {t("mitigation")}
+            <Textarea
+              rows={3}
+              value={form.mitigation}
+              onChange={(e) => setForm({ ...form, mitigation: e.target.value })}
+            />
+          </label>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={save}>
+              {t("save")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setEditing(false)}
+            >
+              {t("cancel")}
+            </Button>
+          </div>
+        </div>
+      ) : risk.probability !== null && risk.impact !== null ? (
         <>
           <p className="text-xs text-muted-foreground">
             {t("scores", {
@@ -366,53 +536,18 @@ function RiskRow({
           {risk.error ?? t("notScored")}
         </p>
       )}
+      {risk.status === "done" && (
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-muted-foreground">
+            {t("discuss")}
+          </summary>
+          <Comments
+            projectId={projectId}
+            refId={risk.code}
+            canComment={canReview}
+          />
+        </details>
+      )}
     </div>
-  );
-}
-
-export function ReviewControls({
-  status,
-  canReview,
-  onReview,
-}: {
-  status: ReviewStatus;
-  canReview: boolean;
-  onReview: (status: ReviewStatus) => void;
-}) {
-  const t = useTranslations("review");
-  return (
-    <span className="flex items-center gap-1">
-      <Badge
-        variant={
-          status === "approved"
-            ? "success"
-            : status === "in_review"
-              ? "warning"
-              : "muted"
-        }
-      >
-        {t(`status.${status}`)}
-      </Badge>
-      {canReview && status !== "approved" && (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onReview("approved")}
-          title={t("approve")}
-        >
-          <Check />
-        </Button>
-      )}
-      {canReview && status === "approved" && (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onReview("in_review")}
-          title={t("reopen")}
-        >
-          <Undo2 />
-        </Button>
-      )}
-    </span>
   );
 }

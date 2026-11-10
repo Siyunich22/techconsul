@@ -243,7 +243,8 @@ def _risks(db: Session, project: Project, run: AssessmentRun | None):
     rows = latest_risks(db, run.id) if run else {}
     order = {r.code: n for n, r in enumerate(spec.risks)}
     lines: list[RiskLine] = []
-    for code in sorted(rows, key=lambda c: (order.get(c, 100), c)):
+    visible = [c for c, r in rows.items() if r.mandatory or r.status != ItemStatus.failed]  # без снятых доп.
+    for code in sorted(visible, key=lambda c: (order.get(c, 100), c)):
         row = rows[code]
         p = RiskPayload.model_validate(row.payload_json) if row.payload_json else None
         lines.append(

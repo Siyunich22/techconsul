@@ -121,7 +121,11 @@ def create_draft(
     released_before = db.scalar(
         select(func.count())
         .select_from(ReportVersion)
-        .where(ReportVersion.project_id == project.id, ReportVersion.status == ReportStatus.released)
+        .where(
+            ReportVersion.project_id == project.id,
+            ReportVersion.status == ReportStatus.released,
+            ReportVersion.render_status != RenderStatus.failed,
+        )
     )
     now = _now()
     report = ReportVersion(
@@ -152,6 +156,10 @@ def create_draft(
     return report
 
 
+class ReleaseBlocked(Exception):
+    pass
+
+
 def render(db: Session, storage: Storage, report_id: uuid.UUID, *, with_pdf: bool = True) -> None:
     """Сборка версии: DOCX (+ PDF двумя проходами для номеров страниц в содержании)."""
     report = db.get(ReportVersion, report_id)
@@ -164,6 +172,14 @@ def render(db: Session, storage: Storage, report_id: uuid.UUID, *, with_pdf: boo
             select(Project).where(Project.id == report.project_id, Project.org_id == report.org_id)
         )
         run = db.get(AssessmentRun, report.run_id) if report.run_id else latest_run(db, project)
+        if report.status == ReportStatus.released:
+            # между запросом выпуска и сборкой могли появиться неутверждённые правки — проверка ещё раз
+            from app.services.risks import coverage
+
+            cov = coverage(db, project)
+            if not cov.can_release:
+                errors = [i.message for i in cov.issues if i.level == "error"]
+                raise ReleaseBlocked(f"После запроса выпуска состав изменился: {'; '.join(errors[:3])}")
         data = collect(
             db,
             storage,

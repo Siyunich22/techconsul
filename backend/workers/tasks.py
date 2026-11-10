@@ -23,6 +23,10 @@ def enqueue_assessment(run_id: uuid.UUID, only: list[str] | None = None) -> None
     run_assessment_task.delay(str(run_id), only)
 
 
+def enqueue_llm_review(run_id: uuid.UUID) -> None:
+    llm_review_task.delay(str(run_id))
+
+
 def enqueue_risks(run_id: uuid.UUID) -> None:
     run_risks_task.delay(str(run_id))
 
@@ -103,3 +107,12 @@ def run_risks_task(run_id: str) -> None:
     from app.assessment.risks import run_stage
 
     run_stage(get_sessionmaker(), uuid.UUID(run_id))
+
+
+@celery_app.task(name="review.llm", soft_time_limit=30 * 60, time_limit=35 * 60)
+def llm_review_task(run_id: str) -> None:
+    """LLM-ревью отчёта: замечания экспертам (не блокируют выпуск)."""
+    from app.services.review import run_llm_review
+
+    with get_sessionmaker()() as db:
+        run_llm_review(db, uuid.UUID(run_id))

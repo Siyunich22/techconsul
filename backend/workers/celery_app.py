@@ -41,6 +41,7 @@ celery_app.conf.update(
         "passport.extract": {"queue": "llm"},
         "assessment.run": {"queue": "llm"},
         "risks.run": {"queue": "llm"},
+        "review.llm": {"queue": "llm"},
     },
 )
 

@@ -97,6 +97,7 @@ class RisksOut(BaseModel):
 
 class ReviewIn(BaseModel):
     status: Literal["ai_draft", "in_review", "approved"]
+    version: int | None = None  # утверждаемая версия: если её сменили — 409
 
 
 class CoverageRow(BaseModel):
@@ -105,10 +106,13 @@ class CoverageRow(BaseModel):
     title: str
     section: str = ""
     status: str  # done | failed | pending | missing
+    version: int = 0
     disclosure_status: str | None = None
     sources: int = 0
     experts: list[str] = Field(default_factory=list)
     review_status: str
+    comments: int = 0  # открытые комментарии
+    edited: bool = False  # есть правка эксперта
 
 
 class Issue(BaseModel):
@@ -125,3 +129,5 @@ class CoverageOut(BaseModel):
     approved: int
     total: int
     can_release: bool
+    llm_review_status: str | None = None
+    llm_review_at: datetime | None = None

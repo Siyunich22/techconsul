@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.assessment.runner import plan_items
@@ -167,6 +167,14 @@ def results_digest(plan, rows: dict[str, SectionResult]) -> str:
     return "\n\n".join(blocks)
 
 
+def check_scales(spec: RiskSpec, probability: int, impact: int) -> None:
+    """Шкалы вероятности и влияния — из шаблона (правило 1), а не фиксированные 1–5 / 1–3."""
+    if probability not in spec.probability_scale:
+        raise ValueError(f"Вероятность {probability} вне шкалы шаблона: {sorted(spec.probability_scale)}")
+    if impact not in spec.impact_scale:
+        raise ValueError(f"Влияние {impact} вне шкалы шаблона: {sorted(spec.impact_scale)}")
+
+
 def _scale_text(scale: dict[int, str]) -> str:
     return "; ".join(f"{k} — {v}" for k, v in sorted(scale.items()))
 
@@ -181,8 +189,11 @@ def _clean_refs(text: str, allowed: set[str], warnings: list[str]) -> str:
     return text
 
 
-def _risk_payload(payload: RiskPayload, allowed: set[str], plan_ids: set[str]) -> tuple[dict, list[str]]:
-    """Только метки источников из результатов пунктов и пункты плана; поля риска (без title/group)."""
+def _risk_payload(
+    payload: RiskPayload, allowed: set[str], plan_ids: set[str], spec: "RiskSpec"
+) -> tuple[dict, list[str]]:
+    """Только метки источников из результатов пунктов и пункты плана; шкалы — по шаблону."""
+    check_scales(spec, payload.probability, payload.impact)
     warnings: list[str] = []
     data = {k: getattr(payload, k) for k in RiskPayload.model_fields}
     data["rationale"] = _clean_refs(payload.rationale, allowed, warnings)
@@ -212,9 +223,66 @@ def _conclusions(payload: SectionPayload, allowed: dict[str, str]) -> tuple[Sect
     return result, warnings
 
 
+STAGE_LOCK_NS = 7710  # пространство advisory-блокировок этапа рисков (двухключевая форма)
+SUPERSEDED = "Снят: риски оценены заново"
+
+
+def record_conclusions(run: AssessmentRun, payload: dict | None, author: str, user_id=None) -> None:
+    """Выводы прогона + запись в историю (ИИ и правки эксперта не теряются бесследно)."""
+    run.conclusions_json = payload
+    run.conclusions_history = [
+        *(run.conclusions_history or []),
+        {
+            "at": _now().isoformat(),
+            "author": author,
+            "user_id": str(user_id) if user_id else None,
+            "payload": payload,
+        },
+    ]
+
+
 def run_stage(
     db_factory: DbFactory, run_id: uuid.UUID, llm: LLM | None = None, concurrency: int | None = None
 ) -> None:
+    """Этап под advisory-блокировкой прогона: второй запуск (повторная доставка задачи, повторный старт)
+    не пишет поверх первого; любой сбой — «ошибка» этапа, а не вечное «оценивается»."""
+    with db_factory() as db:
+        bind = db.get_bind()
+    engine = getattr(bind, "engine", bind)
+    key = {"ns": STAGE_LOCK_NS, "k": run_id.int % (1 << 31)}
+    with engine.connect() as conn:
+        got = bool(conn.execute(text("SELECT pg_try_advisory_lock(:ns, :k)"), key).scalar())
+        conn.commit()
+        if not got:
+            return
+        try:
+            _stage(db_factory, run_id, llm, concurrency)
+        except BaseException as exc:
+            log.exception("Этап рисков прогона %s прерван", run_id)
+            _stage_failed(db_factory, run_id, f"Сбой оценки рисков: {type(exc).__name__}: {exc}"[:1000])
+            if not isinstance(exc, Exception):
+                raise
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:ns, :k)"), key)
+            conn.commit()
+
+
+def _stage_failed(db_factory: DbFactory, run_id: uuid.UUID, error: str) -> None:
+    try:
+        with db_factory() as db:
+            db.rollback()
+            for r in latest_risks(db, run_id).values():
+                if r.status in (ItemStatus.running, ItemStatus.pending):
+                    r.status, r.error = ItemStatus.failed, error
+            run = db.get(AssessmentRun, run_id)
+            if run is not None:
+                run.risks_status, run.risks_error, run.risks_finished_at = "failed", error, _now()
+            db.commit()
+    except Exception:
+        log.exception("Не удалось отметить сбой этапа рисков %s", run_id)
+
+
+def _stage(db_factory: DbFactory, run_id: uuid.UUID, llm: LLM | None, concurrency: int | None) -> None:
     llm = llm or get_llm()
     s = get_settings()
     concurrency = concurrency or s.analysis_concurrency
@@ -243,20 +311,39 @@ def run_stage(
                 .group_by(RiskResult.code)
             ).all()
         }
+        created: dict[str, RiskResult] = {}
         for r in spec.risks:
-            db.add(
-                RiskResult(
-                    org_id=org_id,
-                    project_id=project_id,
-                    run_id=run.id,
-                    code=r.code,
-                    group=r.group,
-                    title=r.title,
-                    mandatory=True,
-                    version=versions.get(r.code, 0) + 1,
-                    status=ItemStatus.running,
-                )
+            created[r.code] = RiskResult(
+                org_id=org_id,
+                project_id=project_id,
+                run_id=run.id,
+                code=r.code,
+                group=r.group,
+                title=r.title,
+                mandatory=True,
+                version=versions.get(r.code, 0) + 1,
+                status=ItemStatus.running,
             )
+            db.add(created[r.code])
+        # дополнительные риски прежней оценки снимаются: новая оценка предложит свои
+        for code, row in latest_risks(db, run.id).items():
+            if not row.mandatory and row.status == ItemStatus.done:
+                db.add(
+                    RiskResult(
+                        org_id=org_id,
+                        project_id=project_id,
+                        run_id=run.id,
+                        code=code,
+                        group=row.group,
+                        title=row.title,
+                        mandatory=False,
+                        version=versions.get(code, 0) + 1,
+                        status=ItemStatus.failed,
+                        error=SUPERSEDED,
+                    )
+                )
+        db.flush()
+        row_ids = {code: row.id for code, row in created.items()}
         db.commit()
         section5 = next((x for x in template["sections"] if x.get("kind") == "conclusion"), {})
 
@@ -300,7 +387,7 @@ def run_stage(
                 schema=RiskPayload,
                 max_tokens=4096,
             )
-            data, warnings = _risk_payload(payload, allowed, plan_ids)
+            data, warnings = _risk_payload(payload, allowed, plan_ids, spec)
             return r.code, RiskPayload.model_validate(data), warnings, None
         except LLMBillingError:
             billing["hit"] = True
@@ -312,9 +399,8 @@ def run_stage(
         results = list(pool.map(assess, spec.risks))
 
     with db_factory() as db:
-        current = latest_risks(db, run_id)
         for code, payload, warnings, error in results:
-            row = current[code]
+            row = db.get(RiskResult, row_ids[code])  # своя строка, а не «последняя» (правка эксперта)
             if payload is not None:
                 row.status, row.payload_json, row.error = ItemStatus.done, payload.model_dump(), None
             else:
@@ -334,9 +420,13 @@ def run_stage(
         if billing["hit"]:
             run.risks_status, run.risks_error = "failed", BILLING_MESSAGE
         else:
-            failed = [r for r in latest_risks(db, run_id).values() if r.status == ItemStatus.failed]
+            failed = [
+                r for r in latest_risks(db, run_id).values() if r.status == ItemStatus.failed and r.mandatory
+            ]
             run.risks_status = "done"
-            run.risks_error = f"Не оценены риски: {', '.join(r.code for r in failed)}" if failed else None
+            note = run.risks_error if run.risks_error and run.risks_error.startswith("Выводы") else None
+            parts = [f"Не оценены риски: {', '.join(r.code for r in failed)}"] if failed else []
+            run.risks_error = "; ".join(parts + ([note] if note else [])) or None
         db.commit()
 
 
@@ -359,8 +449,14 @@ def _extra(db_factory, run_id, llm, ctx, system, spec, scored, allowed, plan_ids
         log.warning("Дополнительные риски не предложены: %s", exc)
         return
     with db_factory() as db:
-        for n, x in enumerate(extra.risks, start=1):
-            data, warnings = _risk_payload(x, allowed, plan_ids)
+        n = 0
+        for x in extra.risks:
+            try:
+                data, warnings = _risk_payload(x, allowed, plan_ids, spec)
+            except (ValidationError, ValueError) as exc:
+                log.info("Дополнительный риск отброшен: %s", exc)
+                continue
+            n += 1
             code = f"X{n}"
             version = (
                 db.scalar(
@@ -422,14 +518,15 @@ def _conclusions_step(db_factory, run_id, llm, ctx, digest, spec, section5, sour
         if warnings:
             log.info("Выводы прогона %s: %s", run_id, "; ".join(warnings))
     except (LLMError, ValidationError, ValueError) as exc:
-        log.warning("Выводы не сформированы: %s", exc)
+        log.warning("Выводы не сформированы: %s", exc)  # прежние выводы остаются
         with db_factory() as db:
             run = db.get(AssessmentRun, run_id)
-            run.conclusions_json = None
+            note = f"Выводы не сформированы заново: {str(exc)[:300]}"
+            run.risks_error = f"{run.risks_error}; {note}" if run.risks_error else note
             db.commit()
         return
     with db_factory() as db:
         run = db.get(AssessmentRun, run_id)
-        run.conclusions_json = result.model_dump(mode="json")
-        run.conclusions_review = ReviewStatus.ai_draft
+        record_conclusions(run, result.model_dump(mode="json"), "ai")
+        run.conclusions_review, run.conclusions_edited_by = ReviewStatus.ai_draft, None
         db.commit()

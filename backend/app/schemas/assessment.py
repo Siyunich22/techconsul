@@ -126,6 +126,7 @@ class ItemOut(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     reused: bool = False  # взят из прошлого прогона (входные данные не изменились)
+    author: str = "ai"  # ai | system | user (правка эксперта)
 
 
 class ItemDetailOut(ItemOut):

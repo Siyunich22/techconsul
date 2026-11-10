@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from string import Template
+from xml.sax.saxutils import escape
 
 import yaml
 from docx import Document
@@ -45,6 +46,14 @@ def _t(key: str, **kw) -> str:
     return Template(str(value)).safe_substitute({k: str(v) for k, v in kw.items()})
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def xml_safe(value: str) -> str:
+    """Управляющие символы (из Word, извлечения PDF, ответа модели) недопустимы в XML документа."""
+    return _CONTROL.sub(" ", value)
+
+
 # --- ссылки на источники: [S12] → [n] в порядке первого упоминания ---
 
 
@@ -67,7 +76,7 @@ class Citations:
             n = self.number(m.group(1))
             return f"[{n}]" if n else ""
 
-        out = self._REF.sub(repl, value or "")
+        out = self._REF.sub(repl, xml_safe(value or ""))
         out = re.sub(r"\](\s*)\[", "], [", out)  # [1] [2] → [1], [2]
         return re.sub(r"\s+([.,;:])", r"\1", out).strip()
 
@@ -156,6 +165,27 @@ def _apply_gost_styles(doc, font: str, size: int) -> None:
         )
 
 
+def _ensure_report_styles(doc) -> None:
+    """Стили, на которые опирается построитель, — в reference.docx их может не быть (документ Word
+    с пустого листа хранит заголовки как «скрытые» стили). Заголовки — с уровнем структуры для TOC и
+    закладок PDF."""
+    for level in (1, 2, 3):
+        name = f"Heading {level}"
+        try:
+            doc.styles[name]
+        except KeyError:
+            st = doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            st.base_style = doc.styles["Normal"]
+            st.font.bold = True
+            st.paragraph_format.keep_with_next = True
+            ppr = st.element.get_or_add_pPr()
+            outline = OxmlElement("w:outlineLvl")
+            outline.set(qn("w:val"), str(level - 1))
+            ppr.append(outline)
+    for name in ("List Bullet", "List Number", "Caption", "Table Text", "TOC 1", "TOC 2", "TOC 3"):
+        _ensure_style(doc, name)
+
+
 def _page_setup(section) -> None:
     section.page_width, section.page_height = Mm(210), Mm(297)
     section.left_margin, section.right_margin = Mm(30), Mm(15)
@@ -206,7 +236,10 @@ def _watermark(header, text: str, font: str) -> None:
         nsdecls("w")
         + ' xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"'
     )
-    header._element.append(parse_xml(_WATERMARK.format(ns=ns, font=font, text=text)))
+    quote = {'"': "&quot;"}
+    header._element.append(
+        parse_xml(_WATERMARK.format(ns=ns, font=escape(font, quote), text=escape(text, quote)))
+    )
 
 
 def _no_indent(paragraph, align=WD_ALIGN_PARAGRAPH.LEFT):
@@ -247,6 +280,7 @@ class Builder:
             for child in list(body):
                 if child.tag != qn("w:sectPr"):
                     body.remove(child)
+            _ensure_report_styles(self.doc)  # шаблон без нужных стилей не должен ронять сборку
         else:
             self.doc = Document()
             _apply_gost_styles(
@@ -291,7 +325,7 @@ class Builder:
         if new_page:
             self.page_break()
         p = self.doc.add_heading(level=level)
-        p.add_run(text)
+        p.add_run(xml_safe(text))
         if center:
             _no_indent(p, WD_ALIGN_PARAGRAPH.CENTER)
         self.toc.append(TocEntry(level, text))
@@ -325,7 +359,7 @@ class Builder:
         for i in range(ncols):
             cell = hdr.cells[i]
             cell.paragraphs[0].style = self._style("Table Text")
-            run = cell.paragraphs[0].add_run(columns[i] if i < len(columns) else "")
+            run = cell.paragraphs[0].add_run(xml_safe(columns[i]) if i < len(columns) else "")
             run.bold = True
         for row in rows:
             cells = tbl.add_row().cells
@@ -420,7 +454,7 @@ class Builder:
             p = _no_indent(self.para(), WD_ALIGN_PARAGRAPH.CENTER)
             p.add_run().add_picture(io.BytesIO(d.logo), height=Cm(2))
         p = _no_indent(self.para(), WD_ALIGN_PARAGRAPH.CENTER)
-        p.add_run(d.executor_name.upper()).bold = True
+        p.add_run(xml_safe(d.executor_name.upper())).bold = True
         if d.executor_bin:
             _no_indent(self.para(f"БИН {d.executor_bin}"), WD_ALIGN_PARAGRAPH.CENTER)
         for _ in range(2):
@@ -574,9 +608,9 @@ class Builder:
                 rows.append(
                     [
                         f"{r.code}. {r.title}{mark}",
-                        f"{d.probability_scale[r.probability]} ({r.probability})",
-                        f"{d.impact_scale[r.impact]} ({r.impact})",
-                        zones[r.zone],
+                        f"{d.probability_scale.get(r.probability, '')} ({r.probability})".strip(),
+                        f"{d.impact_scale.get(r.impact, '')} ({r.impact})".strip(),
+                        zones.get(r.zone, r.zone),
                         r.rationale,
                         "; ".join(r.mitigation),
                     ]

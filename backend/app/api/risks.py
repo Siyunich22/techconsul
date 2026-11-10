@@ -33,7 +33,7 @@ def review_risk(
     project_id: uuid.UUID, code: RiskCode, body: ReviewIn, principal: CurrentPrincipal, db: DbSession
 ):
     project = get_project(db, principal, project_id)
-    svc.review_risk(db, principal, project, code, body.status)
+    svc.review_risk(db, principal, project, code, body.status, body.version)
     return svc.risks(db, project)
 
 
@@ -49,7 +49,7 @@ def review_item(
     project_id: uuid.UUID, item_id: ItemId, body: ReviewIn, principal: CurrentPrincipal, db: DbSession
 ):
     project = get_project(db, principal, project_id)
-    svc.review_item(db, principal, project, item_id, body.status)
+    svc.review_item(db, principal, project, item_id, body.status, body.version)
     return svc.coverage(db, project)
 
 

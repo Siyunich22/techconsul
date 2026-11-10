@@ -2,6 +2,7 @@
 
 from app.models.assessment import (
     AssessmentRun,
+    Comment,
     ItemStatus,
     ResultAuthor,
     ReviewStatus,
@@ -37,6 +38,7 @@ from app.models.project import MemberRole, Project, ProjectMember, ProjectStatus
 from app.models.report import RenderStatus, ReportStatus, ReportVersion
 
 __all__ = [
+    "Comment",
     "RiskResult",
     "RenderStatus",
     "ReportStatus",

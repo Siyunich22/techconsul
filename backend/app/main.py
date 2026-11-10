@@ -16,6 +16,7 @@ from app.api import (
     passport,
     projects,
     reports,
+    review,
     risks,
 )
 from app.core.config import get_settings
@@ -131,6 +132,7 @@ def create_app(*, register_default_template: bool = True) -> FastAPI:
         assessment.router,
         reports.router,
         risks.router,
+        review.router,
         catalog.router,
         admin.router,
     ):

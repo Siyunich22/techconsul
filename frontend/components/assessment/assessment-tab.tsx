@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileText,
   Loader2,
+  Pencil,
   Play,
   RotateCw,
   XCircle,
@@ -28,6 +29,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Comments } from "@/components/review/comments";
+import { VersionHistory } from "@/components/review/history";
+import { ItemEditor, type ItemEditBody } from "@/components/review/item-editor";
+import { ReviewControls } from "@/components/review/review-controls";
 import { API_PREFIX, api, errorMessage } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import {
@@ -36,6 +41,7 @@ import {
   useAssessmentItem,
 } from "@/lib/hooks";
 import type {
+  ReviewStatus,
   Assessment,
   AssessmentItem,
   AssessmentRun,
@@ -511,6 +517,33 @@ function ItemPanel({
       ["pending", "running", "done", "failed"].indexOf(item.status),
   );
   const [instruction, setInstruction] = useState("");
+  const [editing, setEditing] = useState(false);
+  const refreshItem = () => {
+    queryClient.invalidateQueries({ queryKey: ["assessment", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["coverage", projectId] });
+    queryClient.invalidateQueries({
+      queryKey: ["item-versions", projectId, item.item_id],
+    });
+  };
+  const edit = useMutation({
+    mutationFn: (body: ItemEditBody) =>
+      api.put(
+        `/projects/${projectId}/assessment/items/${item.item_id}/edit`,
+        body,
+      ),
+    onSuccess: () => {
+      setEditing(false);
+      refreshItem();
+    },
+  });
+  const review = useMutation({
+    mutationFn: (status: string) =>
+      api.put(
+        `/projects/${projectId}/assessment/items/${item.item_id}/review`,
+        { status, version: item.version },
+      ),
+    onSuccess: refreshItem,
+  });
   const rerun = useMutation({
     mutationFn: () =>
       api.post(
@@ -561,6 +594,16 @@ function ItemPanel({
           {item.version > 1 && (
             <Badge variant="outline">{t("version", { n: item.version })}</Badge>
           )}
+          {item.author === "user" && (
+            <Badge variant="secondary">{t("expertEdit")}</Badge>
+          )}
+          <span className="ml-auto">
+            <ReviewControls
+              status={item.review_status as ReviewStatus}
+              canReview={canRerun && item.status === "done"}
+              onReview={(s) => review.mutate(s)}
+            />
+          </span>
         </CardTitle>
         {item.instruction && (
           <p className="text-xs text-muted-foreground">
@@ -574,7 +617,20 @@ function ItemPanel({
             {t("error")}: {item.error}
           </Alert>
         )}
-        {p && (
+        {review.error ? (
+          <Alert variant="destructive">{errorMessage(review.error)}</Alert>
+        ) : null}
+        {editing && (
+          <ItemEditor
+            payload={p ?? null}
+            sources={(detail.data?.sources ?? []).map((s) => s.sid)}
+            pending={edit.isPending}
+            error={edit.error}
+            onSave={(body) => edit.mutate(body)}
+            onCancel={() => setEditing(false)}
+          />
+        )}
+        {p && !editing && (
           <>
             <Block title={t("summary")}>{cite(p.summary)}</Block>
             {p.analysis_md && (
@@ -698,7 +754,29 @@ function ItemPanel({
             </p>
           </>
         )}
-        {canRerun && item.kind !== "info" && (
+        {canRerun &&
+          !editing &&
+          item.status !== "running" &&
+          item.status !== "pending" && (
+            <Button
+              variant="outline"
+              className="self-start"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil /> {t("edit")}
+            </Button>
+          )}
+        <VersionHistory
+          projectId={projectId}
+          itemId={item.item_id}
+          current={item.version}
+        />
+        <Comments
+          projectId={projectId}
+          refId={item.item_id}
+          canComment={canRerun}
+        />
+        {canRerun && item.kind !== "info" && !editing && (
           <div className="flex flex-col gap-2 border-t pt-4">
             <Textarea
               rows={2}

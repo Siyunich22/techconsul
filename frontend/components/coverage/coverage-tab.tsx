@@ -1,11 +1,19 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BadgeCheck, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  BadgeCheck,
+  Loader2,
+  MessageSquare,
+  Pencil,
+  Sparkles,
+  XCircle,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 
-import { ReviewControls } from "@/components/risks/risks-tab";
+import { ReviewControls } from "@/components/review/review-controls";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +45,16 @@ export function CoverageTab({
   const coverage = useQuery({
     queryKey: ["coverage", projectId],
     queryFn: () => api.get<Coverage>(`/projects/${projectId}/coverage`),
+    refetchInterval: (q) =>
+      ["queued", "running"].includes(q.state.data?.llm_review_status ?? "")
+        ? 4000
+        : false,
+  });
+  const llmReview = useMutation({
+    mutationFn: () =>
+      api.post<Coverage>(`/projects/${projectId}/coverage/llm-review`),
+    onSuccess: (data) =>
+      queryClient.setQueryData(["coverage", projectId], data),
   });
   const review = useMutation({
     mutationFn: ({
@@ -52,7 +70,10 @@ export function CoverageTab({
           : row.kind === "risk"
             ? `risks/${row.ref}/review`
             : "conclusions/review";
-      return api.put(`/projects/${projectId}/${url}`, { status });
+      return api.put(`/projects/${projectId}/${url}`, {
+        status,
+        version: row.kind === "conclusions" ? undefined : row.version,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["coverage", projectId] });
@@ -93,15 +114,48 @@ export function CoverageTab({
                 {t("approved", { n: c.approved, total: c.total })}
               </p>
             </div>
-            {canRelease && (
-              <Button
-                onClick={() => release.mutate()}
-                disabled={!c.can_release || release.isPending}
-              >
-                <BadgeCheck /> {t("release")}
-              </Button>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {canReview && (
+                <Button
+                  variant="outline"
+                  onClick={() => llmReview.mutate()}
+                  disabled={
+                    llmReview.isPending ||
+                    ["queued", "running"].includes(c.llm_review_status ?? "")
+                  }
+                  title={t("llmHint")}
+                >
+                  {["queued", "running"].includes(c.llm_review_status ?? "") ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Sparkles />
+                  )}
+                  {t("llmReview")}
+                </Button>
+              )}
+              {canRelease && (
+                <Button
+                  onClick={() => release.mutate()}
+                  disabled={!c.can_release || release.isPending}
+                >
+                  <BadgeCheck /> {t("release")}
+                </Button>
+              )}
+            </div>
           </div>
+          {c.llm_review_status === "done" && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="llm-review-done"
+            >
+              {t("llmDone", {
+                n: c.issues.filter((i) => i.rule === "llm_review").length,
+              })}
+            </p>
+          )}
+          {llmReview.error ? (
+            <Alert variant="destructive">{errorMessage(llmReview.error)}</Alert>
+          ) : null}
           {release.error && (
             <Alert variant="destructive">{errorMessage(release.error)}</Alert>
           )}
@@ -175,7 +229,25 @@ export function CoverageTab({
                   data-testid={`row-${r.ref}`}
                 >
                   <td className="py-2 pr-2 font-mono text-xs">{r.ref}</td>
-                  <td className="pr-2">{r.title}</td>
+                  <td className="pr-2">
+                    {r.title}
+                    {r.edited && (
+                      <span
+                        title={t("edited")}
+                        className="ml-1 inline-flex text-muted-foreground"
+                      >
+                        <Pencil className="size-3" />
+                      </span>
+                    )}
+                    {r.comments > 0 && (
+                      <span
+                        title={t("openComments")}
+                        className="ml-1 inline-flex items-center gap-0.5 text-xs text-amber-700"
+                      >
+                        <MessageSquare className="size-3" /> {r.comments}
+                      </span>
+                    )}
+                  </td>
                   <td className="pr-2">
                     {r.disclosure_status ? (
                       <Badge variant="muted">

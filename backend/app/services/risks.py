@@ -33,7 +33,7 @@ from app.template_engine.loader import parse_template
 
 # 15 обязательных рисков + дополнительные (Sonnet) и выводы (Opus), USD — по первым прогонам уточнить
 RISKS_COST_MIN, RISKS_COST_MAX = Decimal("0.6"), Decimal("2.5")
-RISKS_STALE = timedelta(minutes=60)
+RISKS_STALE = timedelta(hours=3)  # больше лимита времени задачи risks.run (2 ч)
 
 
 class RisksEnqueuer(Protocol):
@@ -145,7 +145,8 @@ def risks(db: Session, project: Project) -> RisksOut:
     sids: set[str] = set()
     scored: list[tuple[int, int]] = []
     defs = {r.code: r for r in spec.risks}
-    for code in sorted(set(rows) | set(defs), key=lambda c: (order.get(c, 100), c)):
+    visible = {c for c, r in rows.items() if r.mandatory or r.status != ItemStatus.failed}
+    for code in sorted(visible | set(defs), key=lambda c: (order.get(c, 100), c)):
         row = rows.get(code)
         d = defs.get(code)
         p = RiskPayload.model_validate(row.payload_json) if row and row.payload_json else None
@@ -210,14 +211,31 @@ def _can_review(db: Session, principal: Principal, project: Project, ref: str) -
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Утверждать может эксперт, назначенный на раздел")
 
 
-def review_item(db: Session, principal: Principal, project: Project, item_id: str, value: str):
+def _check_version(actual: int, expected: int | None) -> None:
+    """Утверждается конкретная версия: если её уже сменила чужая правка — 409, а не утверждение вслепую."""
+    if expected is not None and expected != actual:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Появилась новая версия (v{actual}) — обновите страницу и проверьте её"
+        )
+
+
+def _not_busy(run: AssessmentRun) -> None:
+    if _risks_busy(run):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Идёт оценка рисков — дождитесь окончания")
+
+
+def review_item(
+    db: Session, principal: Principal, project: Project, item_id: str, value: str, version: int | None = None
+):
     from app.services.assessment import _latest_rows
 
     _can_review(db, principal, project, item_id)
+    db.scalar(select(Project.id).where(Project.id == project.id).with_for_update())
     run = _run(db, project)
     row = _latest_rows(db, run).get(item_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Пункт не найден в прогоне")
+    _check_version(row.version, version)
     if value == "approved" and row.status != ItemStatus.done:
         raise HTTPException(status.HTTP_409_CONFLICT, "Утвердить можно только сформированный пункт")
     row.review_status = ReviewStatus(value)
@@ -236,13 +254,24 @@ def review_item(db: Session, principal: Principal, project: Project, item_id: st
     return row
 
 
-def review_risk(db: Session, principal: Principal, project: Project, code: str, value: str) -> RiskResult:
+def risk_ref(spec, group: str) -> str:
+    """Ссылка для прав и назначений: подраздел группы рисков (4.1, 4.2) внутри раздела рисков."""
+    section = spec.section_id if spec else "4"
+    return group if group.startswith(f"{section}.") else f"{section}.{group}"
+
+
+def review_risk(
+    db: Session, principal: Principal, project: Project, code: str, value: str, version: int | None = None
+) -> RiskResult:
     spec = risk_spec(project)
-    _can_review(db, principal, project, spec.section_id if spec else "4")
+    db.scalar(select(Project.id).where(Project.id == project.id).with_for_update())
     run = _run(db, project)
+    _not_busy(run)
     row = latest_risks(db, run.id).get(code)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Риск не найден")
+    _can_review(db, principal, project, risk_ref(spec, row.group))
+    _check_version(row.version, version)
     if value == "approved" and row.status != ItemStatus.done:
         raise HTTPException(status.HTTP_409_CONFLICT, "Утвердить можно только оценённый риск")
     row.review_status = ReviewStatus(value)
@@ -264,6 +293,7 @@ def review_conclusions(db: Session, principal: Principal, project: Project, valu
     section = next((s for s in template["sections"] if s.get("kind") == "conclusion"), {})
     _can_review(db, principal, project, str(section.get("id", "5")))
     run = _run(db, project)
+    _not_busy(run)
     if value == "approved" and not run.conclusions_json:
         raise HTTPException(status.HTTP_409_CONFLICT, "Выводы ещё не сформированы")
     run.conclusions_review = ReviewStatus(value)
@@ -333,6 +363,7 @@ def coverage(db: Session, project: Project) -> CoverageOut:
                 title=item.title,
                 section=item.section,
                 status=row.status.value if row else "missing",
+                version=row.version if row else 0,
                 disclosure_status=p.disclosure_status if p else None,
                 sources=len({s.id for s in p.sources}) if p else 0,
                 experts=_experts_for(item.id, by_section),
@@ -353,10 +384,15 @@ def coverage(db: Session, project: Project) -> CoverageOut:
                 f"Пункт {item.id}: не заполнены поля нераскрытия",
                 item.id,
             )
-        need = (item.node.output_hints or {}).get("min_alternatives")
+        hints = item.node.output_hints or {}
+        need = hints.get("min_alternatives")
         if need and p.disclosure_status in ("full", "partial"):
-            best = max((len(t.rows) for t in p.tables), default=0)
-            if best < int(need):
+            # таблица сравнения — по первому слову названия таблицы из шаблона («Сравнение …»);
+            # строк: выбранный вариант + не менее need альтернатив
+            words = [str(t).split()[0].lower() for t in hints.get("tables", []) if str(t).split()]
+            compare = [t for t in p.tables if any(w in t.title.lower() for w in words)] if words else p.tables
+            best = max((len(t.rows) for t in compare), default=0)
+            if best < int(need) + 1:
                 issue(
                     "min_alternatives_3_4_1",
                     f"Пункт {item.id}: в таблице сравнения меньше {need} альтернатив",
@@ -382,7 +418,8 @@ def coverage(db: Session, project: Project) -> CoverageOut:
                     title=d.title,
                     section=f"{d.group} {spec.groups.get(d.group, '')}".strip(),
                     status=r.status.value if r else "missing",
-                    experts=_experts_for(spec.section_id, by_section),
+                    version=r.version if r else 0,
+                    experts=_experts_for(risk_ref(spec, d.group), by_section),
                     review_status=r.review_status.value if r else "ai_draft",
                 )
             )
@@ -395,7 +432,9 @@ def coverage(db: Session, project: Project) -> CoverageOut:
             elif r.review_status != ReviewStatus.approved:
                 issue("all_items_expert_approved", f"Риск {d.code} не утверждён экспертом", d.code)
         for code, r in sorted(risk_rows.items()):
-            if r.mandatory:
+            if (
+                r.mandatory or r.status == ItemStatus.failed
+            ):  # снятые и несостоявшиеся доп. риски — не в матрице
                 continue
             rows.append(
                 CoverageRow(
@@ -404,7 +443,8 @@ def coverage(db: Session, project: Project) -> CoverageOut:
                     title=f"{r.title} (дополнительный)",
                     section=f"{r.group} {spec.groups.get(r.group, '')}".strip(),
                     status=r.status.value,
-                    experts=_experts_for(spec.section_id, by_section),
+                    version=r.version,
+                    experts=_experts_for(risk_ref(spec, r.group), by_section),
                     review_status=r.review_status.value,
                 )
             )
@@ -449,8 +489,28 @@ def coverage(db: Session, project: Project) -> CoverageOut:
                 sid,
             )
 
+    if run is not None:
+        from app.services.review import open_comments
+
+        opened = open_comments(db, run.id)
+        edited_items = {k for k, r in items.items() if r.author.value == "user"}
+        edited_risks = {k for k, r in risk_rows.items() if r.author.value == "user"}
+        for row in rows:
+            row.comments = opened.get(row.ref, 0)
+            row.edited = row.ref in (edited_items if row.kind == "item" else edited_risks) or (
+                row.kind == "conclusions" and run.conclusions_edited_by is not None
+            )
+            if row.comments:
+                issue("_comments", f"{row.ref}: открытых комментариев — {row.comments}", row.ref, "warning")
+        for x in run.llm_review_json or []:
+            refs = ", ".join(x.get("refs") or [])
+            issue(
+                "_llm_review", f"{refs + ': ' if refs else ''}{x.get('message', '')}", refs or None, "warning"
+            )
     approved = sum(r.review_status == "approved" for r in rows)
     return CoverageOut(
+        llm_review_status=run.llm_review_status if run else None,
+        llm_review_at=run.llm_review_at if run else None,
         run_id=run.id if run else None,
         rows=rows,
         issues=issues,

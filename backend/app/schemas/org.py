@@ -11,7 +11,7 @@ from app.schemas.common import NonEmpty, ORMModel
 class OrgSettings(BaseModel):
     report_language: Literal["ru", "kk", "en"] = "ru"  # KZ/EN — фаза 9
     page_number_format: Literal["arabic", "page_of_total"] = "arabic"
-    default_font: str = "Times New Roman"
+    default_font: str = Field("Times New Roman", pattern=r"^[\w .\-]{1,64}$")
     default_font_size: int = Field(12, ge=8, le=16)
     # TZ §9: веб-поиск агентов (запросы уходят во внешний поиск; наименования Заказчика не подставляются)
     web_search_enabled: bool = True

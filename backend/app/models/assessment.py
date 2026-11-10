@@ -65,6 +65,15 @@ class AssessmentRun(UUIDPk, Timestamps, Base):
     conclusions_review: Mapped[ReviewStatus] = mapped_column(
         Enum(ReviewStatus, name="review_status"), default=ReviewStatus.ai_draft
     )
+    # все версии выводов (ИИ и эксперта) — выводы не перезаписываются бесследно (правила 3, 8)
+    conclusions_history: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    conclusions_edited_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # LLM-ревью (TZ §5.6, неблокирующее): противоречия, выводы без аргументов, двусмысленности
+    llm_review_status: Mapped[str | None] = mapped_column(String(20))  # queued | running | done | failed
+    llm_review_json: Mapped[list | None] = mapped_column(JSONB(none_as_null=True))
+    llm_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SectionResult(UUIDPk, Timestamps, Base):
@@ -101,6 +110,8 @@ class SectionResult(UUIDPk, Timestamps, Base):
     reused_from_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("section_results.id", ondelete="SET NULL")
     )
+    # правка экспертом (author=user): кто внёс версию — журнал правок ИИ и эксперта (TZ §1)
+    edited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
@@ -147,6 +158,7 @@ class RiskResult(UUIDPk, Timestamps, Base):
     )
     code: Mapped[str] = mapped_column(String(20))
     group: Mapped[str] = mapped_column(String(20))
+    edited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(Text)
     mandatory: Mapped[bool] = mapped_column(default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -162,3 +174,19 @@ class RiskResult(UUIDPk, Timestamps, Base):
     )
     error: Mapped[str | None] = mapped_column(Text)
     validator_warnings_json: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+
+
+class Comment(UUIDPk, Timestamps, Base):
+    """Комментарий эксперта к пункту, риску или выводам (TZ §12, фаза 7); закрывается после правки."""
+
+    __tablename__ = "review_comments"
+    __table_args__ = (Index("ix_review_comments_run_ref", "run_id", "ref"),)
+
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assessment_runs.id", ondelete="CASCADE"))
+    ref: Mapped[str] = mapped_column(String(20))  # id пункта, код риска или id раздела выводов
+    author_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    text: Mapped[str] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

@@ -336,6 +336,7 @@ export interface AssessmentItem {
   started_at: string | null;
   finished_at: string | null;
   reused: boolean;
+  author: "ai" | "system" | "user";
 }
 
 export interface Assessment {
@@ -462,10 +463,13 @@ export interface CoverageRow {
   title: string;
   section: string;
   status: string;
+  version: number;
   disclosure_status: DisclosureStatus | null;
   sources: number;
   experts: string[];
   review_status: ReviewStatus;
+  comments: number;
+  edited: boolean;
 }
 
 export interface Coverage {
@@ -475,4 +479,6 @@ export interface Coverage {
   approved: number;
   total: number;
   can_release: boolean;
+  llm_review_status: string | null;
+  llm_review_at: string | null;
 }
